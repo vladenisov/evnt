@@ -87,6 +87,7 @@ def test_build_initial_model_skips_revalidation_and_copies_ua_mutables(
             "e": "pv",
             "p": "web",
             "tv": "js-1.0.0",
+            "lang": "ru-RU",
             "res": "1920x1080",
         },
     )
@@ -119,5 +120,6 @@ def test_build_initial_model_skips_revalidation_and_copies_ua_mutables(
     )
 
     assert first.aid == "example-app"
+    assert first.lang == "ru-RU"
     assert second.browser_version == ["123"]
     assert second.device_extra == {"family": "Desktop"}

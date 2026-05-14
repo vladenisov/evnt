@@ -2,6 +2,7 @@
 User agent parsing functionality.
 """
 
+from copy import copy
 from functools import lru_cache
 from typing import Final
 
@@ -10,7 +11,13 @@ from crawlerdetect import CrawlerDetect
 from routers.tracker.models.snowplow import UserAgentModel
 from ua_parser import parse
 
-USER_AGENT_CACHE_SIZE: Final[int] = 4096
+USER_AGENT_CACHE_SIZE: Final[int] = 32768
+_MUTABLE_USER_AGENT_FIELDS: Final[tuple[str, ...]] = (
+    "browser_version",
+    "browser_extra",
+    "os_version",
+    "device_extra",
+)
 crawler_detect = CrawlerDetect()
 
 
@@ -27,7 +34,7 @@ def clear_user_agent_cache() -> None:
 @lru_cache(maxsize=USER_AGENT_CACHE_SIZE)
 def _parse_agent_cached(string: str) -> UserAgentModel:
     """Parse a non-null user-agent string into cacheable structured data."""
-    data = UserAgentModel(user_agent=string)
+    data = UserAgentModel.model_construct(user_agent=string)
 
     if not string:
         return data
@@ -75,8 +82,28 @@ def _parse_agent_cached(string: str) -> UserAgentModel:
     return data
 
 
+def _copy_user_agent(data: UserAgentModel) -> UserAgentModel:
+    """Return an isolated copy of cached user-agent data without validation."""
+
+    copied = data.__dict__.copy()
+    for field_name in _MUTABLE_USER_AGENT_FIELDS:
+        copied[field_name] = copy(copied[field_name])
+    return UserAgentModel.model_construct(**copied)
+
+
 @capture_span()
 def parse_agent(string: str | None) -> UserAgentModel:
     """Parse a user agent string into structured data."""
 
-    return _parse_agent_cached(string or "").model_copy(deep=True)
+    return _copy_user_agent(_parse_agent_cached(string or ""))
+
+
+def parse_agent_for_insert(string: str | None) -> UserAgentModel:
+    """
+    Parse a user-agent string for the ingest hot path.
+
+    The returned object is the cached instance and must not be mutated directly.
+    Row construction copies the mutable fields before inserting.
+    """
+
+    return _parse_agent_cached(string or "")

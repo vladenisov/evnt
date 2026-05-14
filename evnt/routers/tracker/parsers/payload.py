@@ -406,11 +406,10 @@ def _build_initial_model(
 ) -> InsertModel:
     """Merge payload + UA + IP into a fresh InsertModel."""
 
-    data = element.__dict__.copy()
-    ua_data = user_agent.__dict__.copy()
+    data = user_agent.__dict__.copy()
     for field_name in _MUTABLE_USER_AGENT_FIELDS:
-        ua_data[field_name] = copy(ua_data[field_name])
-    data.update(ua_data)
+        data[field_name] = copy(data[field_name])
+    data.update(element.__dict__)
     data["user_ip"] = ip
     return InsertModel.model_construct(**data)
 

@@ -61,6 +61,31 @@ def test_parse_agent_caches_repeated_user_agents(monkeypatch):
     assert second.os_version_string == "6.0"
 
 
+def test_parse_agent_for_insert_reuses_cached_instance(monkeypatch):
+    user_agent = "Mozilla/5.0"
+    parse_calls = []
+
+    def _fake_parse(value):
+        parse_calls.append(value)
+        return _parsed_user_agent()
+
+    monkeypatch.setattr(useragent_module, "parse", _fake_parse)
+    monkeypatch.setattr(
+        useragent_module,
+        "crawler_detect",
+        SimpleNamespace(isCrawler=lambda _: False),
+    )
+
+    useragent_module.clear_user_agent_cache()
+    first = useragent_module.parse_agent_for_insert(user_agent)
+    second = useragent_module.parse_agent_for_insert(user_agent)
+    useragent_module.clear_user_agent_cache()
+
+    assert parse_calls == [user_agent]
+    assert first is second
+    assert second.device_extra == {"family": "Desktop"}
+
+
 def test_parse_agent_handles_missing_header_without_parser(monkeypatch):
     def _fail_parse(value):
         raise AssertionError(f"parser should not be called for {value!r}")

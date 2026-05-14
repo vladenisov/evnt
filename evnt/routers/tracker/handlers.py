@@ -13,7 +13,7 @@ from routers.tracker.models.snowplow import (
 )
 from routers.tracker.parsers.ip import convert_ip
 from routers.tracker.parsers.payload import dump_insert_model, parse_payload
-from routers.tracker.parsers.useragent import parse_agent
+from routers.tracker.parsers.useragent import parse_agent_for_insert
 
 logger = structlog.get_logger(__name__)
 
@@ -44,7 +44,7 @@ async def process_data(
         List of processed event records ready for storage
     """
     user_ip = convert_ip(user_ip)
-    ua_data = parse_agent(user_agent)
+    ua_data = parse_agent_for_insert(user_agent)
 
     # Extract payload data
     if isinstance(body, PayloadModel):
