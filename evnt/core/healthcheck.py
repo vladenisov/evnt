@@ -11,11 +11,21 @@ import structlog
 from fastapi import Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from starlette.status import HTTP_200_OK, HTTP_502_BAD_GATEWAY
 
 from .protocols import HealthChecker
 
 logger = structlog.get_logger(__name__)
+
+
+class HealthProbeResponse(BaseModel):
+    """JSON shape returned by the health probe endpoint."""
+
+    status: dict[str, bool]
+    healthy: bool
+    ingest_mode: str
+    table: str | None = None
 
 
 class CachedHealthChecker:
@@ -82,11 +92,16 @@ class ClickHouseHealthChecker:
         return {"clickhouse": healthy}
 
 
-async def probe(request: Request) -> JSONResponse:
+async def probe(request: Request) -> HealthProbeResponse:
     """
     Health check probe endpoint.
 
     Checks the active ingest backend and returns status information.
+
+    The declared return type lets FastAPI document the 200 body in OpenAPI.
+    A ``JSONResponse`` is still returned directly so the HTTP status code can
+    reflect backend health; FastAPI skips re-serialization for ``Response``
+    subclasses.
 
     Args:
         request: The incoming request

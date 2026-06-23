@@ -6,6 +6,8 @@ to improve maintainability and reduce magic strings/numbers.
 """
 
 import base64
+import tempfile
+from pathlib import Path
 from typing import Final
 
 # Application metadata
@@ -35,7 +37,6 @@ DEFAULT_TABLE_GROUP: Final[str] = "evnt"
 SECURITY_HEADERS: Final[dict[str, str]] = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
-    "X-XSS-Protection": "1; mode=block",
     "Referrer-Policy": "strict-origin-when-cross-origin",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
 }
@@ -67,6 +68,16 @@ DEFAULT_RABBITMQ_RETRY_DELAY_MS: Final[int] = 1000
 DEFAULT_RABBITMQ_CONNECT_TIMEOUT_SECONDS: Final[int] = 5
 DEFAULT_RABBITMQ_STARTUP_TIMEOUT_SECONDS: Final[int] = 60
 DEFAULT_RABBITMQ_STARTUP_RETRY_INTERVAL_MS: Final[int] = 1000
+
+# Worker liveness contract
+# The worker writes the wall-clock time of its last successful flush to this
+# file; the healthcheck considers the worker dead if the file is missing or the
+# recorded timestamp is older than the staleness threshold. This threshold must
+# stay strictly greater than the worker's MAX_BACKOFF_SECONDS so a sustained
+# backend outage (which makes the worker sleep up to one full backoff between
+# liveness writes) cannot be misread as a dead worker.
+WORKER_LIVENESS_PATH: Final[Path] = Path(tempfile.gettempdir()) / "evnt-worker.alive"
+WORKER_LIVENESS_STALE_SECONDS: Final[int] = 120
 
 # Async insert settings for ClickHouse
 CLICKHOUSE_ASYNC_SETTINGS: Final[dict[str, int]] = {

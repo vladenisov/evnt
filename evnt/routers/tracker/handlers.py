@@ -2,6 +2,7 @@
 Core data processing handlers for Snowplow events.
 """
 
+import asyncio
 from ipaddress import IPv4Address, IPv6Address
 from typing import Any
 
@@ -44,7 +45,7 @@ async def process_data(
         List of processed event records ready for storage
     """
     user_ip = convert_ip(user_ip)
-    ua_data = parse_agent_for_insert(user_agent)
+    ua_data = await asyncio.to_thread(parse_agent_for_insert, user_agent)
 
     # Extract payload data
     if isinstance(body, PayloadModel):

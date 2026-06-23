@@ -22,6 +22,8 @@ occurred during FastAPI lifespan startup.
 from __future__ import annotations
 
 import asyncio
+import signal
+import time
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -35,6 +37,8 @@ from clickhouse_connect import get_async_client
 from clickhouse_connect.driver.exceptions import ClickHouseError, DatabaseError
 from clickhouse_connect.driver.httputil import get_pool_manager
 from core.config import settings
+from core.constants import WORKER_LIVENESS_PATH, WORKER_LIVENESS_STALE_SECONDS
+from core.lifespan import retry_clickhouse_startup
 from ingest import RabbitMQBatchWorker
 from ingest.rabbitmq import connect_rabbitmq
 from plugins.logger import init_logging
@@ -77,7 +81,7 @@ async def _check_queue_worker_dependencies() -> dict[str, bool]:
     try:
         try:
             client = await get_async_client(
-                **ch_conf.connection.model_dump(),
+                **ch_conf.connection.as_client_kwargs(),
                 query_limit=0,
                 pool_mgr=pool_mgr,
             )
@@ -183,7 +187,7 @@ class DBCommands:
 
             try:
                 client = await get_async_client(
-                    **ch_conf.connection.model_dump(),
+                    **ch_conf.connection.as_client_kwargs(),
                     query_limit=0,
                     pool_mgr=pool_mgr,
                 )
@@ -317,10 +321,28 @@ class QueueCommands:
             queue_conf = settings.ingest.rabbitmq
 
             pool_mgr = get_pool_manager(maxsize=perf_conf.db_pool_size)
-            client = await get_async_client(
-                **ch_conf.connection.model_dump(),
-                query_limit=0,
-                pool_mgr=pool_mgr,
+
+            async def _create_ready_client():
+                client = await get_async_client(
+                    **ch_conf.connection.as_client_kwargs(),
+                    query_limit=0,
+                    pool_mgr=pool_mgr,
+                )
+                try:
+                    query = await client.query("SELECT 1")
+                    if query.first_row[0] != 1:
+                        raise RuntimeError(
+                            "ClickHouse readiness query returned unexpected result",
+                        )
+                    return client
+                except Exception:
+                    await client.close()
+                    raise
+
+            client = await retry_clickhouse_startup(
+                ch_conf,
+                "worker_create",
+                _create_ready_client,
             )
 
             connector = ClickHouseConnector(
@@ -330,8 +352,16 @@ class QueueCommands:
             )
             worker = await RabbitMQBatchWorker.create(connector, queue_conf)
 
+            # Install a SIGTERM handler so docker/k8s shutdown cancels the
+            # running task, letting the finally blocks flush and close cleanly.
+            loop = asyncio.get_running_loop()
+            current = asyncio.current_task()
+            loop.add_signal_handler(signal.SIGTERM, current.cancel)
+
             try:
                 await worker.run()
+            except asyncio.CancelledError:
+                self.logger.info("Worker received shutdown signal, flushing")
             finally:
                 await worker.close()
                 await client.close()
@@ -339,13 +369,65 @@ class QueueCommands:
         asyncio.run(_run())
         return "RabbitMQ worker stopped"
 
+    def _check_worker_liveness(self) -> bool:
+        """Check whether the worker liveness file is present and fresh.
+
+        The worker rewrites ``WORKER_LIVENESS_PATH`` with the wall-clock time
+        after each successful flush. A missing or stale file means the worker
+        loop is no longer making progress and should be considered dead.
+        """
+
+        try:
+            content = WORKER_LIVENESS_PATH.read_text()
+        except FileNotFoundError:
+            self.logger.error(
+                "Worker liveness file missing",
+                liveness_path=str(WORKER_LIVENESS_PATH),
+            )
+            return False
+        except OSError as exc:
+            self.logger.error(
+                "Failed to read worker liveness file",
+                liveness_path=str(WORKER_LIVENESS_PATH),
+                error=str(exc),
+            )
+            return False
+
+        try:
+            last_seen = float(content)
+        except ValueError:
+            self.logger.error(
+                "Worker liveness file contains invalid timestamp",
+                liveness_path=str(WORKER_LIVENESS_PATH),
+                content=content,
+            )
+            return False
+
+        age_seconds = time.time() - last_seen
+        if age_seconds > WORKER_LIVENESS_STALE_SECONDS:
+            self.logger.error(
+                "Worker liveness file is stale",
+                liveness_path=str(WORKER_LIVENESS_PATH),
+                age_seconds=age_seconds,
+                stale_seconds=WORKER_LIVENESS_STALE_SECONDS,
+            )
+            return False
+
+        return True
+
     def healthcheck(self) -> str:
-        """Check whether the RabbitMQ worker dependencies are healthy."""
+        """Check whether the RabbitMQ worker is alive and its deps are healthy."""
 
         init_logging(settings.logging.json_format, settings.logging.level)
+
+        is_alive = self._check_worker_liveness()
         status = asyncio.run(_check_queue_worker_dependencies())
-        if not all(status.values()):
-            self.logger.error("RabbitMQ worker health check failed", status=status)
+        if not is_alive or not all(status.values()):
+            self.logger.error(
+                "RabbitMQ worker health check failed",
+                liveness=is_alive,
+                status=status,
+            )
             raise SystemExit(1)
 
         return "ok"

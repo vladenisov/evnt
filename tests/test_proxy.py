@@ -46,12 +46,17 @@ def _encode(value: str) -> str:
     return proxy_module._encode_url_part(value)
 
 
-def _request(proxy_client, allowed_hosts=frozenset({"example.com"})):
+def _request(
+    proxy_client,
+    allowed_hosts=frozenset({"example.com"}),
+    allowed_ports=frozenset({80, 443}),
+):
     return SimpleNamespace(
         app=SimpleNamespace(
             state=SimpleNamespace(
                 proxy_http_client=proxy_client,
                 proxy_allowed_hosts=allowed_hosts,
+                proxy_allowed_ports=allowed_ports,
             ),
         ),
     )
@@ -89,13 +94,13 @@ async def test_proxy_awaits_async_request(anyio_backend):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
-async def test_proxy_allows_port_on_allowed_hostname(anyio_backend):
+async def test_proxy_allows_configured_port_on_allowed_hostname(anyio_backend):
     event = asyncio.Event()
     requested_urls: list[str] = []
     proxy_client = _DummyProxyClient(event, requested_urls)
 
     response = await proxy_module.proxy(
-        _request(proxy_client),
+        _request(proxy_client, allowed_ports=frozenset({443, 8443})),
         "https",
         _encode("example.com:8443"),
         _encode("tracker"),
@@ -105,6 +110,25 @@ async def test_proxy_allows_port_on_allowed_hostname(anyio_backend):
     assert requested_urls == ["https://example.com:8443/tracker"]
     assert response.status_code == 200
     assert await _read_streaming_response(response) == b"ok"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
+async def test_proxy_rejects_port_not_in_allowlist(anyio_backend):
+    event = asyncio.Event()
+    proxy_client = _DummyProxyClient(event)
+
+    with pytest.raises(proxy_module.HTTPException) as exc_info:
+        await proxy_module.proxy(
+            _request(proxy_client),
+            "https",
+            _encode("example.com:9200"),
+            _encode("internal"),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Proxy target port not allowed"
+    assert not event.is_set()
 
 
 @pytest.mark.anyio

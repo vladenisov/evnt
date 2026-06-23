@@ -56,7 +56,7 @@ async def _create_clickhouse_client():
 
     pool_mgr = get_pool_manager(maxsize=PERFORMANCE_CONFIG.db_pool_size)
     return await get_async_client(
-        **CLICKHOUSE_CONFIG.connection.model_dump(),
+        **CLICKHOUSE_CONFIG.connection.as_client_kwargs(),
         query_limit=0,
         pool_mgr=pool_mgr,
     )
@@ -177,15 +177,21 @@ async def _configure_proxy_http_client(
     limits = httpx.Limits(
         max_connections=PERFORMANCE_CONFIG.max_concurrent_connections,
         max_keepalive_connections=PERFORMANCE_CONFIG.max_concurrent_connections,
+        keepalive_expiry=30.0,
     )
     application.state.proxy_http_client = httpx.AsyncClient(
-        follow_redirects=True,
+        # The allowlist (proxy_allowed_hosts) is only validated against the
+        # initial request URL. Auto-following redirects would let a permitted
+        # host bounce the request to an arbitrary internal target (SSRF), so
+        # redirects must not be followed automatically.
+        follow_redirects=False,
         timeout=DEFAULT_PROXY_TIMEOUT,
         limits=limits,
     )
     application.state.proxy_allowed_hosts = frozenset(
         domain.rstrip(".").lower() for domain in config.domains
     )
+    application.state.proxy_allowed_ports = frozenset(config.allowed_ports)
     application.state._closeables.append(application.state.proxy_http_client)
 
 
@@ -268,7 +274,9 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
             await _configure_direct_ingest(application)
 
         await _configure_proxy_http_client(application)
-        warm_known_iglu_schemas()
+        # warm_known_iglu_schemas performs synchronous file I/O; run it in a
+        # thread so it does not block the event loop during async startup.
+        await asyncio.to_thread(warm_known_iglu_schemas)
         logger.info("Ingest backend initialized")
 
     except Exception as e:

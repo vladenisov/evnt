@@ -9,7 +9,14 @@ import os
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from pydantic import AnyHttpUrl, BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .constants import (
@@ -103,12 +110,12 @@ class LoggingConfig(BaseModel):
 class SecurityConfig(BaseModel):
     """Security-related configuration."""
 
-    disable_docs: bool = False
+    disable_docs: bool = True
     trusted_hosts: list[str] = ["*"]
     enable_https_redirect: bool = False
     trust_proxy_headers: bool = True
     cors_allowed_origins: list[str] = ["*"]
-    cors_allow_credentials: bool = True
+    cors_allow_credentials: bool = False
 
     @field_validator("cors_allowed_origins")
     @classmethod
@@ -148,6 +155,16 @@ class SecurityConfig(BaseModel):
 
         return normalized
 
+    @model_validator(mode="after")
+    def validate_cors_credentials(self) -> SecurityConfig:
+        """Reject combining credentialed CORS with wildcard origins."""
+
+        if self.cors_allowed_origins == ["*"] and self.cors_allow_credentials:
+            raise ValueError(
+                "cannot combine credentials with wildcard origins",
+            )
+        return self
+
 
 class ElasticAPMConfig(BaseModel):
     """Elastic APM configuration."""
@@ -182,6 +199,12 @@ class ProxyConfig(BaseModel):
 
     domains: list[str] = ["google-analytics.com", "www.googletagmanager.com"]
     paths: list[str] = ["analytics.js", "gtm.js"]
+    # Outbound ports the proxy is allowed to reach on an allowlisted host.
+    # The hostname allowlist alone does not constrain the port, so this keeps
+    # the proxy on standard web ports by default while letting operators opt
+    # into additional ports for hosts they explicitly trust. A target with no
+    # explicit port (the scheme default) is always permitted.
+    allowed_ports: list[int] = [80, 443]
 
 
 class PerformanceConfig(BaseModel):
@@ -205,8 +228,14 @@ class ClickHouseConnection(BaseModel):
     port: int = DEFAULT_CLICKHOUSE_PORT
     username: str = DEFAULT_CLICKHOUSE_USERNAME
     database: str = DEFAULT_CLICKHOUSE_DATABASE
-    password: str = "password"
+    password: SecretStr = SecretStr("password")
     connect_timeout: int = DEFAULT_DB_CONNECT_TIMEOUT
+
+    def as_client_kwargs(self) -> dict[str, Any]:
+        """Return connection kwargs with the password unwrapped for the client."""
+        data = self.model_dump()
+        data["password"] = self.password.get_secret_value()
+        return data
 
 
 class ClickHouseConfiguration(BaseModel):
@@ -281,7 +310,7 @@ class RabbitMQConfig(BaseModel):
     host: str = DEFAULT_RABBITMQ_HOST
     port: int = Field(default=DEFAULT_RABBITMQ_PORT, gt=0)
     username: str = "guest"
-    password: str = "guest"
+    password: SecretStr = SecretStr("guest")
     virtualhost: str = "/"
     queue_name: str = DEFAULT_RABBITMQ_QUEUE_NAME
     failed_queue_name: str | None = None
