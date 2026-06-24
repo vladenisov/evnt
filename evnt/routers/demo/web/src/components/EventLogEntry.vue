@@ -28,7 +28,7 @@ function copyJson() {
       <button class="btn copy" type="button" @click="copyJson">Copy JSON</button>
     </header>
     <div class="body">
-      <JsonTree :data="log.payload" :initially-expanded="true" />
+      <JsonTree :data="log.payload" />
     </div>
   </article>
 </template>

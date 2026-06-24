@@ -8,14 +8,18 @@ const props = withDefaults(
     depth?: number;
     initiallyExpanded?: boolean;
     isLast?: boolean;
+    maxDepth?: number;
   }>(),
   {
     name: null,
     depth: 0,
     initiallyExpanded: false,
     isLast: true,
+    maxDepth: 6,
   },
 );
+
+const MAX_VISIBLE_CHILDREN = 100;
 
 type ContainerKind = "object" | "array";
 
@@ -60,6 +64,21 @@ function preview(value: unknown): string {
 const isContainer = computed(() => kind.value !== null);
 const itemsLabel = computed(() => preview(props.data));
 
+const atMaxDepth = computed(() => props.depth >= props.maxDepth);
+
+const visibleEntries = computed(() =>
+  entries.value.slice(0, MAX_VISIBLE_CHILDREN),
+);
+const hiddenCount = computed(() =>
+  Math.max(0, entries.value.length - MAX_VISIBLE_CHILDREN),
+);
+
+const toggleLabel = computed(() => {
+  const action = expanded.value ? "Collapse" : "Expand";
+  if (props.name === null) return action.toLowerCase();
+  return `${action} ${props.name}`;
+});
+
 function valueClass(v: unknown): string {
   if (v === null) return "v-null";
   if (typeof v === "string") return "v-string";
@@ -80,12 +99,12 @@ function formatPrimitive(v: unknown): string {
   <div class="json-tree" :class="{ 'is-root': depth === 0 }">
     <div class="line">
       <button
-        v-if="isContainer && entries.length > 0"
+        v-if="isContainer && entries.length > 0 && !atMaxDepth"
         class="caret"
         :class="{ open: expanded }"
         type="button"
         @click="toggle"
-        :aria-label="expanded ? 'collapse' : 'expand'"
+        :aria-label="toggleLabel"
       ></button>
       <span v-else class="caret caret-empty"></span>
 
@@ -96,13 +115,13 @@ function formatPrimitive(v: unknown): string {
 
       <template v-if="isContainer">
         <span class="brace">{{ kind === "array" ? "[" : "{" }}</span>
-        <span v-if="!expanded && entries.length > 0" class="muted">
+        <span v-if="(!expanded || atMaxDepth) && entries.length > 0" class="muted">
           {{ itemsLabel }}
         </span>
-        <span v-if="!expanded" class="brace">{{
+        <span v-if="!expanded || atMaxDepth" class="brace">{{
           kind === "array" ? "]" : "}"
         }}</span>
-        <span v-if="!expanded && !isLast" class="comma">,</span>
+        <span v-if="(!expanded || atMaxDepth) && !isLast" class="comma">,</span>
       </template>
       <template v-else>
         <span :class="['v', valueClass(data)]">
@@ -112,15 +131,20 @@ function formatPrimitive(v: unknown): string {
       </template>
     </div>
 
-    <div v-if="isContainer && expanded" class="children">
+    <div v-if="isContainer && expanded && !atMaxDepth" class="children">
       <JsonTree
-        v-for="([childKey, childValue], index) in entries"
+        v-for="([childKey, childValue], index) in visibleEntries"
         :key="String(childKey)"
         :data="childValue"
         :name="childKey"
         :depth="depth + 1"
-        :is-last="index === entries.length - 1"
+        :max-depth="maxDepth"
+        :is-last="index === visibleEntries.length - 1 && hiddenCount === 0"
       />
+      <div v-if="hiddenCount > 0" class="line">
+        <span class="caret caret-empty"></span>
+        <span class="muted">…{{ hiddenCount }} more</span>
+      </div>
       <div class="line close">
         <span class="caret caret-empty"></span>
         <span class="brace">{{ kind === "array" ? "]" : "}" }}</span>

@@ -2,7 +2,7 @@ import { fileURLToPath, URL } from "node:url";
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   base: "/demo/",
   plugins: [vue()],
   resolve: {
@@ -13,7 +13,15 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
-    sourcemap: true,
+    sourcemap: mode !== "production",
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          clickhouse: ["@clickhouse/client-web", "@clickhouse/client-common"],
+          table: ["@tanstack/vue-table", "@tanstack/table-core"],
+        },
+      },
+    },
   },
   server: {
     port: 5173,
@@ -29,4 +37,4 @@ export default defineConfig({
       },
     },
   },
-});
+}));

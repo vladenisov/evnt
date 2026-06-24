@@ -4,13 +4,28 @@ import { RouterLink } from "vue-router";
 
 <template>
   <nav class="app-nav">
-    <RouterLink to="/live" class="nav-link" active-class="is-active">
+    <RouterLink
+      to="/live"
+      class="nav-link"
+      active-class="is-active"
+      aria-current-value="page"
+    >
       Live Events
     </RouterLink>
-    <RouterLink to="/tables" class="nav-link" active-class="is-active">
+    <RouterLink
+      to="/tables"
+      class="nav-link"
+      active-class="is-active"
+      aria-current-value="page"
+    >
       ClickHouse Tables
     </RouterLink>
-    <RouterLink to="/settings" class="nav-link" active-class="is-active">
+    <RouterLink
+      to="/settings"
+      class="nav-link"
+      active-class="is-active"
+      aria-current-value="page"
+    >
       Settings
     </RouterLink>
   </nav>

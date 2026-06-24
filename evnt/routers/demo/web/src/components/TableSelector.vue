@@ -25,11 +25,11 @@ async function refresh() {
 }
 
 watch(
-  () => settings.snapshot,
+  settings.snapshot,
   () => {
     void refresh();
   },
-  { deep: true, immediate: true },
+  { immediate: true },
 );
 
 function onChange(event: Event) {
@@ -39,8 +39,13 @@ function onChange(event: Event) {
 
 <template>
   <div class="selector">
-    <label class="lbl">Table</label>
-    <select :value="modelValue" @change="onChange" :disabled="loading">
+    <label class="lbl" for="table-select">Table</label>
+    <select
+      id="table-select"
+      :value="modelValue"
+      @change="onChange"
+      :disabled="loading"
+    >
       <option v-if="!tables.length" value="">
         {{ loading ? "Loading…" : "No tables" }}
       </option>

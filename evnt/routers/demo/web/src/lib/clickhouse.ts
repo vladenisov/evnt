@@ -72,7 +72,7 @@ export async function describeTable(
 
 export async function countRows(qualified: string): Promise<number> {
   const value = await fetchScalar<string | number>(
-    `SELECT count() AS c FROM ${qualified}`,
+    `SELECT count() AS c FROM ${escapeQualified(qualified)}`,
   );
   return Number(value ?? 0);
 }
@@ -96,13 +96,25 @@ export async function queryRows<T = Record<string, unknown>>({
     ? `ORDER BY ${escapeIdent(orderBy)} ${desc ? "DESC" : "ASC"}`
     : "";
   return fetchRows<T>(
-    `SELECT * FROM ${qualified} ${orderClause} LIMIT {l:UInt64} OFFSET {o:UInt64}`,
+    `SELECT * FROM ${escapeQualified(qualified)} ${orderClause} LIMIT {l:UInt64} OFFSET {o:UInt64}`,
     { l: limit, o: offset },
   );
 }
 
 export function escapeIdent(name: string): string {
   return `\`${name.replace(/`/g, "``")}\``;
+}
+
+const QUALIFIED_RE = /^[A-Za-z0-9_]+\.[A-Za-z0-9_]+$/;
+
+export function escapeQualified(qualified: string): string {
+  if (!QUALIFIED_RE.test(qualified)) {
+    throw new Error(
+      `Invalid table identifier: expected "database.table", got "${qualified}"`,
+    );
+  }
+  const [db, tbl] = qualified.split(".");
+  return `${escapeIdent(db)}.${escapeIdent(tbl)}`;
 }
 
 export async function pingConnection(): Promise<boolean> {

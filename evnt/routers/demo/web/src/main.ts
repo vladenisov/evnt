@@ -11,9 +11,17 @@ app.use(createPinia());
 app.use(router);
 
 installInterceptor();
-initSnowplow({ appId: "evnt-demo", userId: "test@email.com" });
+initSnowplow({ appId: "evnt-demo" });
 
 app.mount("#app");
+
+router.afterEach(() => {
+  const main = document.querySelector("main");
+  if (main) {
+    main.setAttribute("tabindex", "-1");
+    main.focus();
+  }
+});
 
 router.isReady().then(() => {
   trackPageView();
