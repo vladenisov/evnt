@@ -78,6 +78,11 @@ DEFAULT_RABBITMQ_STARTUP_RETRY_INTERVAL_MS: Final[int] = 1000
 # liveness writes) cannot be misread as a dead worker.
 WORKER_LIVENESS_PATH: Final[Path] = Path(tempfile.gettempdir()) / "evnt-worker.alive"
 WORKER_LIVENESS_STALE_SECONDS: Final[int] = 120
+# How often the worker proactively refreshes its liveness file, independent of
+# message flow / batch timeout / backoff. Kept well below the stale threshold so
+# an idle worker (even with a large EVNT_INGEST__RABBITMQ__BATCH_TIMEOUT_MS) is
+# never mistaken for dead between writes.
+WORKER_HEARTBEAT_SECONDS: Final[int] = WORKER_LIVENESS_STALE_SECONDS // 3
 
 # Async insert settings for ClickHouse
 CLICKHOUSE_ASYNC_SETTINGS: Final[dict[str, int]] = {

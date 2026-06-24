@@ -21,7 +21,7 @@ from aio_pika.abc import (
 from aio_pika.exceptions import AuthenticationError, ProbableAuthenticationError
 from clickhouse_connect.driver.exceptions import DataError
 from core.config import RabbitMQConfig
-from core.constants import WORKER_LIVENESS_PATH
+from core.constants import WORKER_HEARTBEAT_SECONDS, WORKER_LIVENESS_PATH
 from core.protocols import RowSink
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
@@ -316,6 +316,7 @@ class RabbitMQBatchWorker:
 
         iterator = self.queue.iterator()
         next_message_task: asyncio.Task[AbstractIncomingMessage] | None = None
+        heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         try:
             async with iterator:
                 while True:
@@ -343,6 +344,9 @@ class RabbitMQBatchWorker:
                     await self.add_message(message)
                     self._mark_alive()
         finally:
+            heartbeat_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat_task
             if next_message_task is not None and not next_message_task.done():
                 next_message_task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -392,6 +396,19 @@ class RabbitMQBatchWorker:
                 error=str(exc),
                 path=str(WORKER_LIVENESS_PATH),
             )
+
+    async def _heartbeat_loop(self) -> None:
+        """Refresh the liveness file on a fixed cadence.
+
+        Runs as a background task for the worker's lifetime so liveness is
+        decoupled from message flow, the batch-flush timeout, and backoff. This
+        keeps an idle worker (or one configured with a large batch timeout) from
+        being mistaken for dead by ``queue healthcheck``.
+        """
+
+        while True:
+            self._mark_alive()
+            await asyncio.sleep(WORKER_HEARTBEAT_SECONDS)
 
     async def add_message(self, message: AbstractIncomingMessage) -> None:
         """Decode and buffer a message."""
