@@ -1,6 +1,7 @@
-from fastapi import Query
-from pydantic import AnyUrl, BaseModel
+from pydantic import AnyUrl, BaseModel, Field
 
 
 class HashModel(BaseModel):
-    url: AnyUrl = Query(..., title="URL to hash")
+    """Request body for the proxy hash endpoint."""
+
+    url: AnyUrl = Field(..., title="URL to hash")

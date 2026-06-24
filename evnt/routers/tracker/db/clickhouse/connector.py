@@ -6,6 +6,7 @@ This module provides a connection to ClickHouse.
 
 from dataclasses import dataclass
 from typing import Any
+from uuid import UUID
 
 import structlog
 from clickhouse_connect.driver.asyncclient import AsyncClient
@@ -15,6 +16,9 @@ from core.tracing import async_capture_span
 from routers.tracker.db.clickhouse.schemas.snowplow import ColumnDef, TupleColumnDef
 
 logger = structlog.get_logger(__name__)
+
+# Explicit all-zero UUID written for non-Nullable UUID columns that are missing.
+_ZERO_UUID = UUID(int=0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,7 +73,7 @@ class ClickHouseConnector:
         Returns:
             The ON CLUSTER clause or empty string
         """
-        if cluster_name is None or not cluster_name:
+        if not cluster_name:
             return ""
         return f"ON CLUSTER {cluster_name}"
 
@@ -186,12 +190,25 @@ class ClickHouseConnector:
 
     @staticmethod
     def _sanitize_clickhouse_value(type_name: str, value: Any) -> Any:
-        """Coerce `None` into a safe default for non-nullable string columns."""
+        """Coerce ``None`` into an explicit, type-correct default for non-Nullable columns.
+
+        Several non-Nullable columns are optional in the payload models (e.g.
+        ``device_id`` / ``session_id`` are ``UUID | None``). Rather than relying
+        on the driver to silently zero-fill, map ``None`` to the column type's
+        zero value explicitly.
+
+        NOTE: a missing ``device_id`` becomes the all-zero UUID, which is also
+        the ``SAMPLE BY``/``ORDER BY`` key (``cityHash64(device_id)``); all
+        anonymous events therefore share one sample-key value. Changing that is
+        a sampling-design decision, out of scope for value sanitization.
+        """
 
         if value is not None:
             return value
         if type_name == "String" or type_name.startswith("LowCardinality(String"):
             return ""
+        if type_name == "UUID":
+            return _ZERO_UUID
         return value
 
     async def insert_batch(

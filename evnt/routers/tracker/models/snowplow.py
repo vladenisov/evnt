@@ -32,6 +32,10 @@ _utcnow = partial(datetime.now, UTC)
 class SnowPlowModel(Model):
     """Base model for Snowplow data."""
 
+    # ``data`` is intentionally ``list[Any]`` only on this abstract base: the
+    # base is never instantiated/validated directly. Concrete subclasses tighten
+    # the element type to restore schema enforcement on the real POST body wrapper
+    # (e.g. ``PayloadModel.data: list[PayloadElementModel]`` below).
     data: list[Any] = Field(...)
     json_schema: str | None = Field(
         None,
@@ -126,8 +130,7 @@ class Contexts(Base):
     @computed_field
     @property
     def contexts(self) -> dict[str, Any] | None:
-        contexts = find_available(self.co, self.cx)
-        return contexts
+        return find_available(self.co, self.cx)
 
     @computed_field
     @property
@@ -173,7 +176,7 @@ class PayloadBase(Base, Validation, StructuredEvent):
         default_factory=_utcnow,
         title="Timestamp when event occurred, as recorded by client device",
     )
-    stm: datetime | None = Field(
+    stm: datetime = Field(
         default_factory=_utcnow,
         title="Timestamp when event was sent by client device to collector",
     )

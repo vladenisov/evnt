@@ -10,8 +10,6 @@ from fastapi import Request, Response
 
 from .base import BaseMiddleware
 
-SECURITY_CONFIG = settings.security
-
 
 class SecurityHeadersMiddleware(BaseMiddleware):
     """
@@ -28,6 +26,8 @@ class SecurityHeadersMiddleware(BaseMiddleware):
 
     def __init__(self, app):
         super().__init__(app)
+        # Read security settings at init time (not import time) for testability
+        self._security_config = settings.security
         # Build headers dict once at initialization
         self._headers = self._build_headers()
 
@@ -36,7 +36,7 @@ class SecurityHeadersMiddleware(BaseMiddleware):
         headers = dict(SECURITY_HEADERS)
 
         # Add HSTS header if HTTPS redirect is enabled
-        if SECURITY_CONFIG.enable_https_redirect:
+        if self._security_config.enable_https_redirect:
             headers["Strict-Transport-Security"] = HSTS_HEADER
 
         return headers

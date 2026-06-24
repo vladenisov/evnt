@@ -1,3 +1,4 @@
+import importlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -220,3 +221,126 @@ async def test_lifespan_warms_iglu_schema_cache(monkeypatch, anyio_backend):
         and kwargs["skipped_count"] == 0
         for args, kwargs in logger.infos
     )
+
+
+class _FakeRabbitMQConnector:
+    """Stand-in for RabbitMQPublisher returned by ``create``."""
+
+    def __init__(self):
+        self.channel = SimpleNamespace(name="fake-channel")
+        self.closed = False
+
+    async def close(self):
+        self.closed = True
+
+
+class _FakeRabbitMQHealthChecker:
+    def __init__(self, channel, *queue_names):
+        self.channel = channel
+        self.queue_names = queue_names
+
+    async def check(self):
+        return {"rabbitmq": True}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
+async def test_lifespan_configures_rabbitmq_ingest(monkeypatch, anyio_backend):
+    # The RabbitMQ publisher/health-checker are imported lazily inside
+    # ``_configure_rabbitmq_ingest`` from the ``ingest`` package, so patch them
+    # on that module to avoid touching a real broker.
+    ingest_module = importlib.import_module("ingest")
+
+    connector = _FakeRabbitMQConnector()
+    create_calls = []
+
+    async def _fake_create(*, config, tables, database, cluster_name):
+        create_calls.append(
+            {
+                "config": config,
+                "tables": tables,
+                "database": database,
+                "cluster_name": cluster_name,
+            },
+        )
+        return connector
+
+    monkeypatch.setattr(
+        ingest_module.RabbitMQPublisher,
+        "create",
+        classmethod(lambda cls, **kwargs: _fake_create(**kwargs)),
+    )
+    monkeypatch.setattr(
+        ingest_module,
+        "RabbitMQHealthChecker",
+        _FakeRabbitMQHealthChecker,
+    )
+
+    async def _no_op_configure_proxy_http_client(application):
+        application.state.proxy_http_client = object()
+
+    monkeypatch.setattr(
+        lifespan_module,
+        "_configure_proxy_http_client",
+        _no_op_configure_proxy_http_client,
+    )
+    monkeypatch.setattr(
+        lifespan_module,
+        "warm_known_iglu_schemas",
+        lambda: None,
+    )
+
+    rabbitmq_config = SimpleNamespace(
+        host="rabbitmq-host",
+        queue_name="evnt.ingest",
+        resolved_failed_queue_name="evnt.ingest.failed",
+    )
+    clickhouse_config = ClickHouseConfig()
+
+    monkeypatch.setattr(
+        lifespan_module,
+        "INGEST_CONFIG",
+        SimpleNamespace(mode="rabbitmq", rabbitmq=rabbitmq_config),
+    )
+    monkeypatch.setattr(
+        lifespan_module,
+        "CLICKHOUSE_CONFIG",
+        clickhouse_config,
+    )
+
+    application = SimpleNamespace(state=SimpleNamespace())
+
+    async with lifespan_module.lifespan(application):
+        # While the app is running, the RabbitMQ connector and health checker
+        # must be wired onto application state and registered as closeable.
+        assert application.state.ingest_mode == "rabbitmq"
+        assert application.state.ch_client is None
+        assert application.state.connector is connector
+        assert isinstance(
+            application.state.health_checker,
+            lifespan_module.CachedHealthChecker,
+        )
+        assert isinstance(
+            application.state.health_checker.checker,
+            _FakeRabbitMQHealthChecker,
+        )
+        assert connector in application.state._closeables
+        assert connector.closed is False
+
+    # Publisher.create received the configured tables/database/cluster.
+    assert len(create_calls) == 1
+    call = create_calls[0]
+    assert call["config"] is rabbitmq_config
+    assert call["tables"] == clickhouse_config.configuration.tables
+    assert call["database"] == clickhouse_config.configuration.database
+    assert call["cluster_name"] == clickhouse_config.configuration.cluster_name
+
+    # The health checker was built from the connector's channel + queue names.
+    assert application.state.health_checker.checker.channel is connector.channel
+    assert application.state.health_checker.checker.queue_names == (
+        rabbitmq_config.queue_name,
+        rabbitmq_config.resolved_failed_queue_name,
+    )
+
+    # On shutdown the connector must be closed.
+    assert connector.closed is True

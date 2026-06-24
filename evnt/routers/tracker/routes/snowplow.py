@@ -30,6 +30,12 @@ async def get_user_ip_from_configured_header(
     Returns:
         Parsed IP address or None
     """
+    # Trust proxy headers contract: when proxy headers are not trusted, ignore
+    # the configured forwarding header and rely on the direct peer address only.
+    if not settings.security.trust_proxy_headers:
+        host = request.client.host if request.client else None
+        return extract_ip_from_header(host)
+
     header_name = settings.common.snowplow.user_ip_header
     for header_value in request.headers.getlist(header_name):
         parsed_ip = extract_ip_from_header(header_value)

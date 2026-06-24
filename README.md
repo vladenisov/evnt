@@ -64,7 +64,7 @@ That places `sp.js` (and plugins) into `evnt/static/`, served at `/static/sp.js`
 
 ## Configuration
 
-Settings are loaded from a single Pydantic `BaseSettings` model. Use the `EVNT_` prefix and `__` for nested keys:
+Settings are loaded from a single Pydantic `BaseSettings` model. Use the `EVNT_` prefix and `__` for nested keys. List/dict values are parsed as JSON:
 
 ```bash
 EVNT_COMMON__DEMO=true                          # enable the /demo/ SPA at runtime
@@ -78,6 +78,80 @@ Inspect the full config tree (with defaults) any time:
 ```bash
 uv run python evnt/cli.py settings
 ```
+
+A starter [`.env.example`](.env.example) lists the most common variables with safe defaults.
+
+### Security defaults
+
+`evnt` ships with safe-by-default settings. The most important ones to know about:
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `EVNT_SECURITY__DISABLE_DOCS` | `true` | `/docs`, `/redoc` and `/openapi.json` are **disabled**. Set to `false` to expose them. |
+| `EVNT_SECURITY__CORS_ALLOWED_ORIGINS` | `["*"]` | JSON array of bare HTTP(S) origins (e.g. `["https://example.com"]`), or `["*"]`. |
+| `EVNT_SECURITY__CORS_ALLOW_CREDENTIALS` | `false` | Cannot be combined with the `["*"]` wildcard — see below. |
+| `EVNT_SECURITY__TRUSTED_HOSTS` | `["*"]` | Allowed `Host` header values. |
+| `EVNT_SECURITY__TRUST_PROXY_HEADERS` | `true` | When enabled, the client IP is taken from the configured proxy header (`X-Forwarded-For` by default). Set to `false` if `evnt` is exposed directly (no trusted reverse proxy) so clients cannot spoof their IP. |
+| `EVNT_SECURITY__ENABLE_HTTPS_REDIRECT` | `false` | Adds an HSTS header and HTTPS redirect when enabled. |
+
+**Re-enabling the API docs.** Interactive docs are off by default. To turn them back on (e.g. for a private/staging instance):
+
+```bash
+EVNT_SECURITY__DISABLE_DOCS=false
+```
+
+**CORS with credentials.** Browser credentials (cookies, `Authorization`) are **never** reflected for wildcard origins. To allow credentialed cross-origin requests you must list explicit origins — combining `cors_allow_credentials=true` with `cors_allowed_origins=["*"]` is rejected at startup:
+
+```bash
+# Secure credentialed pattern: explicit origins, never "*"
+EVNT_SECURITY__CORS_ALLOWED_ORIGINS='["https://app.example.com"]'
+EVNT_SECURITY__CORS_ALLOW_CREDENTIALS=true
+```
+
+### Analytics-script proxy
+
+The optional proxy at `/proxy` fetches allowlisted third-party analytics scripts so you can serve them first-party. It is constrained to prevent SSRF:
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `EVNT_PROXY__DOMAINS` | `["google-analytics.com", "www.googletagmanager.com"]` | Hostname allowlist. |
+| `EVNT_PROXY__PATHS` | `["analytics.js", "gtm.js"]` | Path allowlist. |
+| `EVNT_PROXY__ALLOWED_PORTS` | `[80, 443]` | Outbound ports the proxy may reach on an allowlisted host. A target with no explicit port (the scheme default) is always permitted; any other port is rejected with `403`. |
+
+Redirects are **not** followed, so an allowlisted host cannot bounce the proxy to an internal target.
+
+### Secrets
+
+`EVNT_CLICKHOUSE__CONNECTION__PASSWORD` and `EVNT_INGEST__RABBITMQ__PASSWORD` are stored as Pydantic `SecretStr`: they are still configured the same way via environment variables, but their values are redacted from config dumps (`cli.py settings`) and logs.
+
+### ClickHouse and RabbitMQ
+
+| Setting | Default |
+| --- | --- |
+| `EVNT_CLICKHOUSE__CONNECTION__HOST` | `clickhouse` |
+| `EVNT_CLICKHOUSE__CONNECTION__PORT` | `8123` |
+| `EVNT_CLICKHOUSE__CONNECTION__USERNAME` | `default` |
+| `EVNT_CLICKHOUSE__CONNECTION__PASSWORD` | `password` (override in production) |
+| `EVNT_CLICKHOUSE__STARTUP_TIMEOUT_SECONDS` | `60` |
+| `EVNT_INGEST__MODE` | `direct` (alternative: `rabbitmq`) |
+| `EVNT_INGEST__RABBITMQ__HOST` | `rabbitmq` |
+| `EVNT_INGEST__RABBITMQ__PORT` | `5672` |
+| `EVNT_INGEST__RABBITMQ__QUEUE_NAME` | `evnt.ingest` |
+| `EVNT_INGEST__RABBITMQ__BATCH_SIZE` | `500` |
+
+On startup the app (and, in `rabbitmq` mode, the worker) retries the ClickHouse connection until `startup_timeout_seconds` elapses.
+
+### RabbitMQ worker
+
+In `rabbitmq` mode a separate worker drains the queue and batch-inserts into ClickHouse (`cli.py queue worker`). It shuts down cleanly on `SIGTERM` (final flush + close), publishes to the failed queue with publisher confirms to avoid silent loss, and backs off with capped exponential delay on downstream outages.
+
+The worker writes a liveness file that a dedicated healthcheck reads:
+
+```bash
+uv run python evnt/cli.py queue healthcheck
+```
+
+This is wired as the worker container `HEALTHCHECK` in [`compose.yml`](compose.yml); it reports unhealthy if the worker stops refreshing liveness. The staleness threshold stays above the worker's max backoff so a sustained backend outage is not misread as a dead worker.
 
 ## License & Attribution
 

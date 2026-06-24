@@ -63,8 +63,10 @@ class BaseMiddleware(BaseHTTPMiddleware):
                 if isinstance(modified_request, Response):
                     return modified_request
 
-            # Call next handler
-            response = await call_next(request)
+            # Call next handler, using the modified request when one was returned
+            response = await call_next(
+                modified_request if isinstance(modified_request, Request) else request
+            )
 
             # Post-processing hook
             response = await self.process_response(request, response)

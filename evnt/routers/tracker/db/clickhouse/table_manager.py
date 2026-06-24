@@ -27,18 +27,18 @@ class TableManager:
         """
         Create databases for all tables.
         """
-        databases = []
+        databases: set[str] = set()
 
         for group, tables in self.connector.tables.items():
-            if group not in databases:
-                databases.append(group)
+            if not isinstance(tables, dict):
+                continue
+            databases.add(group)
             for table_info in tables.values():
                 if not isinstance(table_info, dict):
                     continue
                 if table_info["name"] and "." in table_info["name"]:
                     db = table_info["name"].split(".")[0]
-                    if db not in databases:
-                        databases.append(db)
+                    databases.add(db)
 
         for db in databases:
             await self.connector.command(
@@ -56,10 +56,7 @@ class TableManager:
         """
         table_data = self.connector.tables[table_group]["local"]
         fields = get_fields_for_table_group(table_group)
-
-        columns = []
-        for field in fields:
-            columns.append(field.create_expression)
+        columns = [field.create_expression for field in fields]
 
         full_table_name = await self.connector.get_full_table_name(table_data["name"])
 

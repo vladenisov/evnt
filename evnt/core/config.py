@@ -6,10 +6,18 @@ Settings can be configured via environment variables with the EVNT_ prefix.
 """
 
 import os
+import re
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from pydantic import AnyHttpUrl, BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .constants import (
@@ -83,6 +91,11 @@ class Snowplow(BaseModel):
         return header_name
 
 
+_VALID_LOG_LEVELS: frozenset[str] = frozenset(
+    {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+)
+
+
 class LoggingConfig(BaseModel):
     """Logging configuration."""
 
@@ -93,22 +106,23 @@ class LoggingConfig(BaseModel):
     @classmethod
     def validate_level(cls, v: str) -> str:
         """Ensure log level is uppercase and valid."""
-        valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
         upper_v = v.upper()
-        if upper_v not in valid_levels:
-            raise ValueError(f"Invalid log level: {v}. Must be one of {valid_levels}")
+        if upper_v not in _VALID_LOG_LEVELS:
+            raise ValueError(
+                f"Invalid log level: {v}. Must be one of {_VALID_LOG_LEVELS}"
+            )
         return upper_v
 
 
 class SecurityConfig(BaseModel):
     """Security-related configuration."""
 
-    disable_docs: bool = False
+    disable_docs: bool = True
     trusted_hosts: list[str] = ["*"]
     enable_https_redirect: bool = False
     trust_proxy_headers: bool = True
     cors_allowed_origins: list[str] = ["*"]
-    cors_allow_credentials: bool = True
+    cors_allow_credentials: bool = False
 
     @field_validator("cors_allowed_origins")
     @classmethod
@@ -148,6 +162,16 @@ class SecurityConfig(BaseModel):
 
         return normalized
 
+    @model_validator(mode="after")
+    def validate_cors_credentials(self) -> SecurityConfig:
+        """Reject combining credentialed CORS with wildcard origins."""
+
+        if self.cors_allowed_origins == ["*"] and self.cors_allow_credentials:
+            raise ValueError(
+                "cannot combine credentials with wildcard origins",
+            )
+        return self
+
 
 class ElasticAPMConfig(BaseModel):
     """Elastic APM configuration."""
@@ -182,6 +206,12 @@ class ProxyConfig(BaseModel):
 
     domains: list[str] = ["google-analytics.com", "www.googletagmanager.com"]
     paths: list[str] = ["analytics.js", "gtm.js"]
+    # Outbound ports the proxy is allowed to reach on an allowlisted host.
+    # The hostname allowlist alone does not constrain the port, so this keeps
+    # the proxy on standard web ports by default while letting operators opt
+    # into additional ports for hosts they explicitly trust. A target with no
+    # explicit port (the scheme default) is always permitted.
+    allowed_ports: list[int] = [80, 443]
 
 
 class PerformanceConfig(BaseModel):
@@ -205,8 +235,17 @@ class ClickHouseConnection(BaseModel):
     port: int = DEFAULT_CLICKHOUSE_PORT
     username: str = DEFAULT_CLICKHOUSE_USERNAME
     database: str = DEFAULT_CLICKHOUSE_DATABASE
-    password: str = "password"
+    password: SecretStr = SecretStr("password")
     connect_timeout: int = DEFAULT_DB_CONNECT_TIMEOUT
+
+    def as_client_kwargs(self) -> dict[str, Any]:
+        """Return connection kwargs with the password unwrapped for the client."""
+        data = self.model_dump()
+        data["password"] = self.password.get_secret_value()
+        return data
+
+
+_SQL_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9_]+")
 
 
 class ClickHouseConfiguration(BaseModel):
@@ -214,6 +253,22 @@ class ClickHouseConfiguration(BaseModel):
 
     database: str = DEFAULT_DATABASE_NAME
     cluster_name: str = ""
+
+    @field_validator("database", "cluster_name")
+    @classmethod
+    def validate_sql_identifier(cls, value: str) -> str:
+        """Reject database/cluster names that are not plain SQL identifiers.
+
+        These values are interpolated directly into DDL (``ON CLUSTER`` /
+        ``Distributed(...)`` / qualified table names), so constraining them to
+        ``[A-Za-z0-9_]`` closes a config-injection surface. ``cluster_name`` may
+        be empty (meaning "no cluster").
+        """
+        if value and not _SQL_IDENTIFIER_RE.fullmatch(value):
+            raise ValueError(
+                f"must be a plain SQL identifier ([A-Za-z0-9_]), got {value!r}",
+            )
+        return value
 
     # Can be overridden via environment variables such as:
     # EVNT_CLICKHOUSE__CONFIGURATION__TABLES__EVNT__LOCAL__ENGINE=
@@ -281,7 +336,7 @@ class RabbitMQConfig(BaseModel):
     host: str = DEFAULT_RABBITMQ_HOST
     port: int = Field(default=DEFAULT_RABBITMQ_PORT, gt=0)
     username: str = "guest"
-    password: str = "guest"
+    password: SecretStr = SecretStr("guest")
     virtualhost: str = "/"
     queue_name: str = DEFAULT_RABBITMQ_QUEUE_NAME
     failed_queue_name: str | None = None

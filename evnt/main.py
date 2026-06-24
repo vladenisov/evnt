@@ -55,7 +55,9 @@ def _get_base_middleware() -> list[Middleware]:
             if allow_all_origins
             else settings.security.cors_allowed_origins,
             allow_origin_regex=".*" if allow_all_origins else None,
-            allow_credentials=settings.security.cors_allow_credentials,
+            allow_credentials=(
+                settings.security.cors_allow_credentials and not allow_all_origins
+            ),
             allow_methods=["*"],
             allow_headers=["*"],
             expose_headers=["*"],
@@ -102,7 +104,12 @@ def _configure_routers(app: FastAPI) -> None:
     """Configure and include all routers."""
     app.include_router(app_router)
     app.include_router(proxy_router)
-    app.mount("/static", StaticFiles(directory="static"), name="static")
+    # check_dir=False so the app boots even when the static assets have not been
+    # downloaded yet (they are fetched at container build time, and the dir is
+    # gitignored). Requests to /static/* simply 404 until the dir is populated.
+    app.mount(
+        "/static", StaticFiles(directory="static", check_dir=False), name="static"
+    )
 
     # Mount demo static assets if enabled (there are no dynamic demo routes).
     # The Vue SPA is built into routers/demo/web/dist by Vite (`npm run build`).
@@ -120,14 +127,15 @@ def _configure_integrations(app: FastAPI) -> None:
     if settings.elastic_apm.enabled:
         try:
             from elasticapm.contrib.starlette import ElasticAPM
-            from plugins.elastic_apm import elastic_apm_client
+            from plugins.elastic_apm import create_elastic_apm_client
         except ImportError as exc:
             raise RuntimeError(
                 "Elastic APM is enabled but `elastic-apm` is not installed. "
                 "Install the optional extra: `uv sync --extra apm`.",
             ) from exc
 
-        app.add_middleware(ElasticAPM, client=elastic_apm_client)
+        client = create_elastic_apm_client()
+        app.add_middleware(ElasticAPM, client=client)
 
     # Add Prometheus middleware if enabled
     if settings.prometheus.enabled:
@@ -174,6 +182,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
         docs_url=None if settings.security.disable_docs else "/docs",
         redoc_url=None if settings.security.disable_docs else "/redoc",
+        openapi_url=None if settings.security.disable_docs else "/openapi.json",
         middleware=_get_base_middleware(),
     )
 

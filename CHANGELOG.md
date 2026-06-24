@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Security
+- **CORS hardened**: `EVNT_SECURITY__CORS_ALLOW_CREDENTIALS` now defaults to `false`. Combining credentials with the `["*"]` wildcard origin is rejected at startup, and credentials are never reflected for wildcard origins by the middleware. Use explicit origins (`EVNT_SECURITY__CORS_ALLOWED_ORIGINS`) to allow credentialed cross-origin requests.
+- **API docs disabled by default**: `EVNT_SECURITY__DISABLE_DOCS` now defaults to `true`, so `/docs`, `/redoc` and `/openapi.json` are off. Set it to `false` to re-enable.
+- **Proxy SSRF fixes**: the `/proxy` endpoint no longer auto-follows redirects (an allowlisted host could otherwise bounce it to an internal target), and a new `EVNT_PROXY__ALLOWED_PORTS` allowlist (default `[80, 443]`) restricts outbound ports so an attacker cannot append a port to reach internal services.
+- **Secrets redacted**: ClickHouse and RabbitMQ passwords are now `SecretStr`; their values are kept out of config dumps and logs while remaining env-configurable.
+- **Proxy-header trust enforced**: `EVNT_SECURITY__TRUST_PROXY_HEADERS` is now actually honored for client-IP extraction. Set it to `false` when `evnt` is exposed directly so clients cannot spoof their IP via `X-Forwarded-For`.
+- Dropped the deprecated `X-XSS-Protection` response header.
+
+### Reliability
+- Offloaded blocking work (jsonschema validation, user-agent parsing) to worker threads so per-request CPU work no longer blocks the event loop.
+- **RabbitMQ worker**: clean `SIGTERM` shutdown (final flush + close), capped exponential backoff moved out of the flush path into the run loop, publisher confirms on failed-queue publishes to prevent silent loss, and a liveness file consumed by a new `evnt queue healthcheck` (wired as the worker container `HEALTHCHECK` in `compose.yml`).
+- ClickHouse startup connection retry in the worker, matching the app lifespan.
+- Guarded untrusted UUID/datetime/dict-key access in the payload parser to avoid uncaught 500s.
+
+### Changed
+- `EVNT_SECURITY__DISABLE_DOCS` default `false` → `true`.
+- `EVNT_SECURITY__CORS_ALLOW_CREDENTIALS` default `true` → `false`.
+- ClickHouse/RabbitMQ password fields changed type to `SecretStr`.
+
+### Added
+- `EVNT_PROXY__ALLOWED_PORTS` (default `[80, 443]`) — outbound proxy port allowlist.
+- `evnt queue healthcheck` CLI command — liveness-aware health probe for the RabbitMQ worker.
+
 ## [v2.2.0] - 2025-05-28
 
 ### Changed

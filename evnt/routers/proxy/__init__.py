@@ -27,16 +27,13 @@ PROXY_CONFIG = settings.proxy
 PROXY_ENDPOINT = settings.common.snowplow.endpoints.proxy_endpoint
 HOSTNAME = settings.common.hostname
 ALLOWED_PROXY_SCHEMES: Final[frozenset[str]] = frozenset({"http", "https"})
+# Fallback used only if the lifespan did not populate the port allowlist.
+DEFAULT_ALLOWED_PROXY_PORTS: Final[frozenset[int]] = frozenset({80, 443})
 
 
 def _normalize_hostname(hostname: str) -> str:
     """Normalize hostnames for allowlist comparison."""
     return hostname.rstrip(".").lower()
-
-
-ALLOWED_PROXY_HOSTS: Final[frozenset[str]] = frozenset(
-    _normalize_hostname(domain) for domain in PROXY_CONFIG.domains
-)
 
 
 router = APIRouter(tags=["proxy"], prefix=PROXY_ENDPOINT)
@@ -73,9 +70,21 @@ def _should_encode_path(path: str) -> bool:
 
 
 def _get_proxy_allowed_hosts(request: Request) -> frozenset[str]:
-    """Return the configured proxy host allowlist."""
+    """Return the lifespan-owned proxy host allowlist."""
 
-    return getattr(request.app.state, "proxy_allowed_hosts", ALLOWED_PROXY_HOSTS)
+    allowed_hosts = getattr(request.app.state, "proxy_allowed_hosts", None)
+    if allowed_hosts is None:
+        raise HTTPException(status_code=500, detail="Proxy is not ready")
+    return allowed_hosts
+
+
+def _get_proxy_allowed_ports(request: Request) -> frozenset[int]:
+    """Return the lifespan-owned set of permitted outbound ports."""
+
+    allowed_ports = getattr(request.app.state, "proxy_allowed_ports", None)
+    if allowed_ports is None:
+        return DEFAULT_ALLOWED_PROXY_PORTS
+    return allowed_ports
 
 
 def _get_proxy_http_client(request: Request) -> httpx.AsyncClient:
@@ -87,7 +96,7 @@ def _get_proxy_http_client(request: Request) -> httpx.AsyncClient:
     return client
 
 
-@router.post("/hash")
+@router.post("/hash", response_model=AnyHttpUrl, status_code=200)
 async def proxy_hash(data: models.HashModel) -> AnyHttpUrl:
     """
     Generate a proxied URL for an external resource.
@@ -132,7 +141,15 @@ async def proxy_hash(data: models.HashModel) -> AnyHttpUrl:
     return result
 
 
-@router.get("/route/{schema}/{host}/{path}")
+@router.get(
+    "/route/{schema}/{host}/{path}",
+    responses={
+        400: {"description": "Unsupported proxy scheme or invalid proxy target"},
+        403: {"description": "Proxy target host or port not allowed"},
+        502: {"description": "Proxy request to the upstream target failed"},
+        504: {"description": "Proxy request to the upstream target timed out"},
+    },
+)
 async def proxy(
     request: Request,
     schema: str,
@@ -168,6 +185,16 @@ async def proxy(
     # (cloud metadata, internal services, localhost, ...).
     if _normalize_hostname(target_url.host) not in _get_proxy_allowed_hosts(request):
         raise HTTPException(status_code=403, detail="Proxy target not allowed")
+
+    # The host allowlist check above compares only the hostname, so an attacker
+    # could append an arbitrary port (e.g. "google-analytics.com:9200") to reach
+    # internal services. Restrict the outbound port to the configured allowlist
+    # (standard web ports by default); a target with no explicit port uses the
+    # scheme default and is always permitted.
+    if target_url.port is not None and target_url.port not in _get_proxy_allowed_ports(
+        request
+    ):
+        raise HTTPException(status_code=403, detail="Proxy target port not allowed")
 
     try:
         client = _get_proxy_http_client(request)
