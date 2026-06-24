@@ -30,6 +30,8 @@ class TableManager:
         databases: set[str] = set()
 
         for group, tables in self.connector.tables.items():
+            if not isinstance(tables, dict):
+                continue
             databases.add(group)
             for table_info in tables.values():
                 if not isinstance(table_info, dict):

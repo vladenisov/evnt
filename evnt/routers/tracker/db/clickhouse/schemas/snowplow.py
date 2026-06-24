@@ -36,8 +36,12 @@ class ColumnDef(NamedTuple):
         type_name = self.type_name
 
         parts = [quote_identifier(self.name), type_name]
-        if self.default_type:
-            parts.append(f"{self.default_type} {self.default_expression}")
+        if self.default_expression is not None:
+            # Emit the DEFAULT/MATERIALIZED clause whenever an expression is
+            # declared; ``default_type`` defaults to ``DEFAULT`` so a column that
+            # only sets ``default_expression`` still gets its intended default.
+            default_type = self.default_type or "DEFAULT"
+            parts.append(f"{default_type} {self.default_expression}")
         if self.comment:
             parts.append(f"COMMENT {quote_identifier(self.comment)}")
         if self.codec_expression:

@@ -6,6 +6,7 @@ Settings can be configured via environment variables with the EVNT_ prefix.
 """
 
 import os
+import re
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
@@ -244,11 +245,30 @@ class ClickHouseConnection(BaseModel):
         return data
 
 
+_SQL_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9_]+")
+
+
 class ClickHouseConfiguration(BaseModel):
     """ClickHouse table configuration."""
 
     database: str = DEFAULT_DATABASE_NAME
     cluster_name: str = ""
+
+    @field_validator("database", "cluster_name")
+    @classmethod
+    def validate_sql_identifier(cls, value: str) -> str:
+        """Reject database/cluster names that are not plain SQL identifiers.
+
+        These values are interpolated directly into DDL (``ON CLUSTER`` /
+        ``Distributed(...)`` / qualified table names), so constraining them to
+        ``[A-Za-z0-9_]`` closes a config-injection surface. ``cluster_name`` may
+        be empty (meaning "no cluster").
+        """
+        if value and not _SQL_IDENTIFIER_RE.fullmatch(value):
+            raise ValueError(
+                f"must be a plain SQL identifier ([A-Za-z0-9_]), got {value!r}",
+            )
+        return value
 
     # Can be overridden via environment variables such as:
     # EVNT_CLICKHOUSE__CONFIGURATION__TABLES__EVNT__LOCAL__ENGINE=
