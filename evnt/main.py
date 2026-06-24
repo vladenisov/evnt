@@ -111,13 +111,18 @@ def _configure_routers(app: FastAPI) -> None:
         "/static", StaticFiles(directory="static", check_dir=False), name="static"
     )
 
-    # Mount demo static assets if enabled (there are no dynamic demo routes).
-    # The Vue SPA is built into routers/demo/web/dist by Vite (`npm run build`).
+    # Serve the Vue SPA via FastAPI's first-class frontend() (FastAPI >= 0.138).
+    # fallback="index.html" gives history-mode SPA fallback: deep links such as
+    # /demo/tables resolve to index.html instead of 404, while missing assets
+    # still 404 correctly. API path operations are matched first, so this never
+    # shadows the collector routes. check_dir=False so the app boots before the
+    # Vite build populates dist/ (built at container build time, dir is gitignored).
     if settings.common.demo:
-        app.mount(
+        app.frontend(
             "/demo",
-            StaticFiles(directory="routers/demo/web/dist", html=True),
-            name="demo",
+            directory="routers/demo/web/dist",
+            fallback="index.html",
+            check_dir=False,
         )
 
 
