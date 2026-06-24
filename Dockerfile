@@ -28,7 +28,7 @@ FROM web-builder-${BUILD_DEMO} AS web-builder
 # --- Stage 2: runtime image ---
 FROM python:3.14.4-alpine3.23
 
-COPY --from=ghcr.io/astral-sh/uv:0.11.6-python3.14-alpine3.23 /usr/local/bin/uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.11.8-python3.14-alpine3.23 /usr/local/bin/uv /usr/local/bin/uv
 
 # Space-separated list of optional dependency groups to install, e.g.
 #   docker build --build-arg EXTRAS="apm sentry" .
