@@ -18,6 +18,9 @@ from .protocols import HealthChecker
 
 logger = structlog.get_logger(__name__)
 
+# SQL used to verify ClickHouse connectivity during health checks.
+_CLICKHOUSE_HEALTH_QUERY: str = "SELECT 1"
+
 
 class HealthProbeResponse(BaseModel):
     """JSON shape returned by the health probe endpoint."""
@@ -83,7 +86,7 @@ class ClickHouseHealthChecker:
 
         healthy = True
         try:
-            query = await self.client.query("SELECT 1")
+            query = await self.client.query(_CLICKHOUSE_HEALTH_QUERY)
             healthy = query.first_row[0] == 1
         except Exception as exc:
             logger.warning("ClickHouse health check failed", error=str(exc))

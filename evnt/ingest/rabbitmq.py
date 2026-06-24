@@ -28,6 +28,9 @@ from pydantic import BaseModel, Field
 
 logger = structlog.get_logger(__name__)
 
+# Milliseconds per second — used when converting ms config values to seconds.
+_MS_PER_SECOND = 1000
+
 # Assigned to a name so ruff-format (PEP 758 preview) does not rewrite the
 # `except (A, B):` literal into the bare `except A, B:` form.
 _AUTH_ERRORS = (AuthenticationError, ProbableAuthenticationError)
@@ -114,7 +117,7 @@ async def retry_rabbitmq_startup[T](
                 raise
 
             retry_in_seconds = min(
-                config.startup_retry_interval_ms / 1000,
+                config.startup_retry_interval_ms / _MS_PER_SECOND,
                 remaining_seconds,
             )
             logger.warning(
@@ -269,8 +272,8 @@ class RabbitMQBatchWorker:
         self.sink = sink
         self.config = config
         self.failed_queue_name = config.resolved_failed_queue_name
-        self.flush_interval = config.batch_timeout_ms / 1000
-        self.retry_delay = config.retry_delay_ms / 1000
+        self.flush_interval = config.batch_timeout_ms / _MS_PER_SECOND
+        self.retry_delay = config.retry_delay_ms / _MS_PER_SECOND
         self.pending_batches: dict[str, list[PendingMessage]] = defaultdict(list)
         self.pending_row_counts: dict[str, int] = defaultdict(int)
         # Per-table-group consecutive insert-failure counts, used to drive a

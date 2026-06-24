@@ -1,3 +1,5 @@
+"""Utility helpers for decoding Snowplow tracker payloads."""
+
 import base64
 
 import orjson
@@ -37,6 +39,11 @@ def find_available(
     unencoded: str | dict | None,
     encoded: str | dict | None,
 ) -> dict | None:
+    """Return the first available payload as a dict, decoding base64 if needed.
+
+    Prefers ``unencoded`` over ``encoded``. Returns ``None`` when neither
+    yields a valid JSON object.
+    """
     result = None
 
     if unencoded:

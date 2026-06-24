@@ -130,8 +130,7 @@ class Contexts(Base):
     @computed_field
     @property
     def contexts(self) -> dict[str, Any] | None:
-        contexts = find_available(self.co, self.cx)
-        return contexts
+        return find_available(self.co, self.cx)
 
     @computed_field
     @property

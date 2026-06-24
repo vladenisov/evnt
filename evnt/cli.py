@@ -45,6 +45,11 @@ from plugins.logger import init_logging
 from routers.tracker.db.clickhouse import ClickHouseConnector, TableManager
 from starlette.status import HTTP_200_OK
 
+# ClickHouse ping query used for readiness checks
+_CH_READINESS_QUERY: str = "SELECT 1"
+# HTTP request timeout (seconds) for downloading tracker script bundles
+_SCRIPT_DOWNLOAD_TIMEOUT_SECONDS: int = 60
+
 
 def _build_clickhouse_insert_settings(*, require_wait: bool = False) -> dict[str, int]:
     """Build ClickHouse insert settings for direct and worker writes."""
@@ -85,7 +90,7 @@ async def _check_queue_worker_dependencies() -> dict[str, bool]:
                 query_limit=0,
                 pool_mgr=pool_mgr,
             )
-            query = await client.query("SELECT 1")
+            query = await client.query(_CH_READINESS_QUERY)
             status["clickhouse"] = query.first_row[0] == 1
         except Exception as exc:
             queue_logger.warning(
@@ -265,7 +270,9 @@ class ScriptsCommands:
         for filename in files:
             url = f"{base_url}/{filename}"
             self.logger.info("Downloading", url=url)
-            resp = httpx.get(url, timeout=60, follow_redirects=True)
+            resp = httpx.get(
+                url, timeout=_SCRIPT_DOWNLOAD_TIMEOUT_SECONDS, follow_redirects=True
+            )
             if resp.status_code != HTTP_200_OK:
                 raise RuntimeError(
                     f"Failed to download {filename}: HTTP {resp.status_code}",
@@ -290,10 +297,9 @@ class ScriptsCommands:
             loader_map = out_path / "loader.js.map"
             if loader_map.exists():
                 orig_text = loader_map.read_text(encoding="utf-8")
-                updated_text: str | None = None
                 data = orjson.loads(orig_text)
                 data["file"] = "loader.js"
-                updated_text = orjson.dumps(data).decode("utf-8")
+                updated_text: str = orjson.dumps(data).decode("utf-8")
                 loader_map.write_text(updated_text, encoding="utf-8")
                 self.logger.info("Updated loader.js.map file field to loader.js")
 
@@ -329,7 +335,7 @@ class QueueCommands:
                     pool_mgr=pool_mgr,
                 )
                 try:
-                    query = await client.query("SELECT 1")
+                    query = await client.query(_CH_READINESS_QUERY)
                     if query.first_row[0] != 1:
                         raise RuntimeError(
                             "ClickHouse readiness query returned unexpected result",

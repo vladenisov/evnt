@@ -69,7 +69,7 @@ class ClickHouseConnector:
         Returns:
             The ON CLUSTER clause or empty string
         """
-        if cluster_name is None or not cluster_name:
+        if not cluster_name:
             return ""
         return f"ON CLUSTER {cluster_name}"
 

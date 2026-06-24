@@ -175,7 +175,7 @@ def parse_cookies(cookies_str: str | None) -> dict[str, Any]:
     try:
         cookies.load(cookies_str)
     except Exception as e:
-        logger.warning(f"Failed to parse cookies: {e}")
+        logger.warning("Failed to parse cookies", error=str(e))
         return {}
 
     # Extract Snowplow specific cookies
@@ -190,15 +190,10 @@ def parse_cookies(cookies_str: str | None) -> dict[str, Any]:
 
             result["device_id"] = parts[0]
             result["created_time"] = parts[1]
-            if parts[2] is not None:
-                result["vid"] = parts[2]
+            result["vid"] = parts[2]
             result["now_time"] = parts[3]
             result["last_visit_time"] = parts[4]
             result["session_id"] = parts[5]
-
-        # # Extract session ID from sp cookie
-        # if name.startswith("_sp_ses"):
-        #     result["session_id"] = cookie.value
 
     return result
 
@@ -513,7 +508,7 @@ def _apply_amp_linker(result: InsertModel) -> None:
         amp_device_id = parse_base64(amp_device_id)
         result.amp["device_id"] = UUID(amp_device_id)
     except Exception as e:
-        logger.warning(f"Failed to parse AMP linker: {e}")
+        logger.warning("Failed to parse AMP linker", error=str(e))
 
 
 def _apply_cookie_duid(result: InsertModel, cookies: str | None) -> None:

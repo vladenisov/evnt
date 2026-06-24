@@ -24,6 +24,14 @@ from .protocols import HealthChecker
 
 logger = structlog.get_logger(__name__)
 
+# Seconds a keepalive connection may remain idle before being closed.
+# 30 s is a pragmatic default that sits well below most reverse-proxy idle
+# timeouts (typically 60–120 s) while avoiding aggressive churn.
+_KEEPALIVE_EXPIRY_SECONDS: float = 30.0
+
+# SQL used to verify ClickHouse connectivity at startup.
+_CLICKHOUSE_READINESS_QUERY: str = "SELECT 1"
+
 PERFORMANCE_CONFIG = settings.performance
 CLICKHOUSE_CONFIG = settings.clickhouse
 INGEST_CONFIG = settings.ingest
@@ -67,7 +75,7 @@ async def _create_ready_clickhouse_client():
 
     client = await _create_clickhouse_client()
     try:
-        query = await client.query("SELECT 1")
+        query = await client.query(_CLICKHOUSE_READINESS_QUERY)
         if query.first_row[0] != 1:
             raise RuntimeError("ClickHouse readiness query returned unexpected result")
         return client
@@ -177,7 +185,7 @@ async def _configure_proxy_http_client(
     limits = httpx.Limits(
         max_connections=PERFORMANCE_CONFIG.max_concurrent_connections,
         max_keepalive_connections=PERFORMANCE_CONFIG.max_concurrent_connections,
-        keepalive_expiry=30.0,
+        keepalive_expiry=_KEEPALIVE_EXPIRY_SECONDS,
     )
     application.state.proxy_http_client = httpx.AsyncClient(
         # The allowlist (proxy_allowed_hosts) is only validated against the

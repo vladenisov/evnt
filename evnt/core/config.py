@@ -90,6 +90,11 @@ class Snowplow(BaseModel):
         return header_name
 
 
+_VALID_LOG_LEVELS: frozenset[str] = frozenset(
+    {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+)
+
+
 class LoggingConfig(BaseModel):
     """Logging configuration."""
 
@@ -100,10 +105,11 @@ class LoggingConfig(BaseModel):
     @classmethod
     def validate_level(cls, v: str) -> str:
         """Ensure log level is uppercase and valid."""
-        valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
         upper_v = v.upper()
-        if upper_v not in valid_levels:
-            raise ValueError(f"Invalid log level: {v}. Must be one of {valid_levels}")
+        if upper_v not in _VALID_LOG_LEVELS:
+            raise ValueError(
+                f"Invalid log level: {v}. Must be one of {_VALID_LOG_LEVELS}"
+            )
         return upper_v
 
 
