@@ -122,7 +122,7 @@ class SecurityConfig(BaseModel):
     enable_https_redirect: bool = False
     trust_proxy_headers: bool = True
     cors_allowed_origins: list[str] = ["*"]
-    cors_allow_credentials: bool = False
+    cors_allow_credentials: bool = True
 
     @field_validator("cors_allowed_origins")
     @classmethod
@@ -161,16 +161,6 @@ class SecurityConfig(BaseModel):
             )
 
         return normalized
-
-    @model_validator(mode="after")
-    def validate_cors_credentials(self) -> SecurityConfig:
-        """Reject combining credentialed CORS with wildcard origins."""
-
-        if self.cors_allowed_origins == ["*"] and self.cors_allow_credentials:
-            raise ValueError(
-                "cannot combine credentials with wildcard origins",
-            )
-        return self
 
 
 class ElasticAPMConfig(BaseModel):

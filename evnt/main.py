@@ -55,9 +55,7 @@ def _get_base_middleware() -> list[Middleware]:
             if allow_all_origins
             else settings.security.cors_allowed_origins,
             allow_origin_regex=".*" if allow_all_origins else None,
-            allow_credentials=(
-                settings.security.cors_allow_credentials and not allow_all_origins
-            ),
+            allow_credentials=settings.security.cors_allow_credentials,
             allow_methods=["*"],
             allow_headers=["*"],
             expose_headers=["*"],

@@ -7,7 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Security
-- **CORS hardened**: `EVNT_SECURITY__CORS_ALLOW_CREDENTIALS` now defaults to `false`. Combining credentials with the `["*"]` wildcard origin is rejected at startup, and credentials are never reflected for wildcard origins by the middleware. Use explicit origins (`EVNT_SECURITY__CORS_ALLOWED_ORIGINS`) to allow credentialed cross-origin requests.
+- **CORS collector default**: `EVNT_SECURITY__CORS_ALLOW_CREDENTIALS` defaults to `true` with `EVNT_SECURITY__CORS_ALLOWED_ORIGINS='["*"]'`, so tracker requests using browser credentials work out of the box. Wildcard origins are implemented by reflecting the request `Origin`, not by returning `Access-Control-Allow-Origin: *`.
 - **API docs disabled by default**: `EVNT_SECURITY__DISABLE_DOCS` now defaults to `true`, so `/docs`, `/redoc` and `/openapi.json` are off. Set it to `false` to re-enable.
 - **Proxy SSRF fixes**: the `/proxy` endpoint no longer auto-follows redirects (an allowlisted host could otherwise bounce it to an internal target), and a new `EVNT_PROXY__ALLOWED_PORTS` allowlist (default `[80, 443]`) restricts outbound ports so an attacker cannot append a port to reach internal services.
 - **Secrets redacted**: ClickHouse and RabbitMQ passwords are now `SecretStr`; their values are kept out of config dumps and logs while remaining env-configurable.
@@ -22,7 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 - `EVNT_SECURITY__DISABLE_DOCS` default `false` → `true`.
-- `EVNT_SECURITY__CORS_ALLOW_CREDENTIALS` default `true` → `false`.
+- `EVNT_SECURITY__CORS_ALLOW_CREDENTIALS` defaults to `true` for collector compatibility.
 - ClickHouse/RabbitMQ password fields changed type to `SecretStr`.
 
 ### Added
