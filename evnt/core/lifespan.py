@@ -12,7 +12,6 @@ from contextlib import asynccontextmanager
 import httpx
 import structlog
 from clickhouse_connect import get_async_client
-from clickhouse_connect.driver.httputil import get_pool_manager
 from fastapi import FastAPI
 from routers.tracker.parsers.iglu import warm_iglu_schema_cache
 
@@ -62,11 +61,11 @@ def _build_clickhouse_insert_settings() -> dict[str, int]:
 async def _create_clickhouse_client():
     """Create the shared ClickHouse client."""
 
-    pool_mgr = get_pool_manager(maxsize=PERFORMANCE_CONFIG.db_pool_size)
     return await get_async_client(
         **CLICKHOUSE_CONFIG.connection.as_client_kwargs(),
         query_limit=0,
-        pool_mgr=pool_mgr,
+        connector_limit=PERFORMANCE_CONFIG.db_pool_size,
+        connector_limit_per_host=PERFORMANCE_CONFIG.db_pool_size,
     )
 
 

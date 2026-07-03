@@ -7,7 +7,7 @@ requires-python = ">=3.14"
 dependencies = [
     "aio-pika>=9.5.7",
     "brotli-asgi>=1.4.0",
-    "clickhouse-connect>=0.8.17",
+    "clickhouse-connect[async]>=0.8.17",
     "crawlerdetect>=0.3.0",
     "fastapi>=0.127.1",
     "fastapi-structlog>=0.7.1",

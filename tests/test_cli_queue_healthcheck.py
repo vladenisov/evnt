@@ -59,14 +59,15 @@ async def test_check_queue_worker_dependencies_returns_healthy_status(
     client = _FakeClient(result=1)
     channel = _FakeChannel()
     connection = _FakeConnection(channel)
+    client_kwargs = {}
 
     async def _fake_get_async_client(**kwargs):
+        client_kwargs.update(kwargs)
         return client
 
     async def _fake_connect_rabbitmq(config):
         return connection
 
-    monkeypatch.setattr(cli_module, "get_pool_manager", lambda maxsize: object())
     monkeypatch.setattr(cli_module, "get_async_client", _fake_get_async_client)
     monkeypatch.setattr(cli_module, "connect_rabbitmq", _fake_connect_rabbitmq)
 
@@ -76,6 +77,15 @@ async def test_check_queue_worker_dependencies_returns_healthy_status(
         "clickhouse": True,
         "rabbitmq": True,
     }
+    assert client_kwargs["query_limit"] == 0
+    assert (
+        client_kwargs["connector_limit"] == cli_module.settings.performance.db_pool_size
+    )
+    assert (
+        client_kwargs["connector_limit_per_host"]
+        == cli_module.settings.performance.db_pool_size
+    )
+    assert "pool_mgr" not in client_kwargs
     assert channel.declare_calls == [
         {
             "name": "evnt.ingest",
@@ -105,7 +115,6 @@ async def test_check_queue_worker_dependencies_reports_unhealthy_status(
     async def _fail_rabbitmq(config):
         raise RuntimeError("rabbitmq down")
 
-    monkeypatch.setattr(cli_module, "get_pool_manager", lambda maxsize: object())
     monkeypatch.setattr(cli_module, "get_async_client", _fail_clickhouse)
     monkeypatch.setattr(cli_module, "connect_rabbitmq", _fail_rabbitmq)
 

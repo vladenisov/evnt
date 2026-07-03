@@ -33,22 +33,86 @@ import fire
 import httpx
 import orjson
 import structlog
-from clickhouse_connect import get_async_client
-from clickhouse_connect.driver.exceptions import ClickHouseError, DatabaseError
-from clickhouse_connect.driver.httputil import get_pool_manager
 from core.config import settings
 from core.constants import WORKER_LIVENESS_PATH, WORKER_LIVENESS_STALE_SECONDS
-from core.lifespan import retry_clickhouse_startup
-from ingest import RabbitMQBatchWorker
-from ingest.rabbitmq import connect_rabbitmq
 from plugins.logger import init_logging
-from routers.tracker.db.clickhouse import ClickHouseConnector, TableManager
 from starlette.status import HTTP_200_OK
 
 # ClickHouse ping query used for readiness checks
 _CH_READINESS_QUERY: str = "SELECT 1"
 # HTTP request timeout (seconds) for downloading tracker script bundles
 _SCRIPT_DOWNLOAD_TIMEOUT_SECONDS: int = 60
+
+
+def _build_clickhouse_client_kwargs(perf_conf: Any, ch_conf: Any) -> dict[str, Any]:
+    """Build async ClickHouse client kwargs shared by CLI commands."""
+
+    return {
+        **ch_conf.connection.as_client_kwargs(),
+        "query_limit": 0,
+        "connector_limit": perf_conf.db_pool_size,
+        "connector_limit_per_host": perf_conf.db_pool_size,
+    }
+
+
+async def get_async_client(**kwargs: Any) -> Any:
+    """Lazily create the async ClickHouse client.
+
+    The scripts CLI does not need ClickHouse. Keeping this import lazy prevents
+    static-asset downloads from requiring clickhouse-connect's async extra.
+    """
+
+    from clickhouse_connect import (  # noqa: PLC0415
+        get_async_client as create_async_client,
+    )
+
+    return await create_async_client(**kwargs)
+
+
+def _clickhouse_errors() -> tuple[type[Exception], type[Exception]]:
+    """Return ClickHouse driver exceptions without importing them at CLI load."""
+
+    from clickhouse_connect.driver.exceptions import (  # noqa: PLC0415
+        ClickHouseError,
+        DatabaseError,
+    )
+
+    return ClickHouseError, DatabaseError
+
+
+def _clickhouse_connector_classes() -> tuple[type[Any], type[Any]]:
+    """Return ClickHouse connector classes only for DB/worker commands."""
+
+    from routers.tracker.db.clickhouse import (  # noqa: PLC0415
+        ClickHouseConnector,
+        TableManager,
+    )
+
+    return ClickHouseConnector, TableManager
+
+
+def _retry_clickhouse_startup() -> Any:
+    """Return the shared ClickHouse startup retry helper lazily."""
+
+    from core.lifespan import retry_clickhouse_startup  # noqa: PLC0415
+
+    return retry_clickhouse_startup
+
+
+def _rabbitmq_batch_worker() -> type[Any]:
+    """Return the RabbitMQ worker class only for queue worker startup."""
+
+    from ingest import RabbitMQBatchWorker  # noqa: PLC0415
+
+    return RabbitMQBatchWorker
+
+
+async def connect_rabbitmq(config: Any) -> Any:
+    """Lazily connect to RabbitMQ so scripts commands stay dependency-light."""
+
+    from ingest.rabbitmq import connect_rabbitmq as create_connection  # noqa: PLC0415
+
+    return await create_connection(config)
 
 
 def _build_clickhouse_insert_settings(*, require_wait: bool = False) -> dict[str, int]:
@@ -78,7 +142,6 @@ async def _check_queue_worker_dependencies() -> dict[str, bool]:
         "clickhouse": False,
         "rabbitmq": False,
     }
-    pool_mgr = get_pool_manager(maxsize=perf_conf.db_pool_size)
     client = None
     connection = None
     channel = None
@@ -86,9 +149,7 @@ async def _check_queue_worker_dependencies() -> dict[str, bool]:
     try:
         try:
             client = await get_async_client(
-                **ch_conf.connection.as_client_kwargs(),
-                query_limit=0,
-                pool_mgr=pool_mgr,
+                **_build_clickhouse_client_kwargs(perf_conf, ch_conf),
             )
             query = await client.query(_CH_READINESS_QUERY)
             status["clickhouse"] = query.first_row[0] == 1
@@ -187,29 +248,26 @@ class DBCommands:
             init_logging(settings.logging.json_format, settings.logging.level)
             perf_conf = settings.performance
             ch_conf = settings.clickhouse
-
-            pool_mgr = get_pool_manager(maxsize=perf_conf.db_pool_size)
+            clickhouse_errors = _clickhouse_errors()
+            clickhouse_connector_cls, table_manager_cls = (
+                _clickhouse_connector_classes()
+            )
 
             try:
                 client = await get_async_client(
-                    **ch_conf.connection.as_client_kwargs(),
-                    query_limit=0,
-                    pool_mgr=pool_mgr,
+                    **_build_clickhouse_client_kwargs(perf_conf, ch_conf),
                 )
-            except (
-                ClickHouseError,
-                DatabaseError,
-            ) as e:  # pragma: no cover - network path
+            except clickhouse_errors as e:  # pragma: no cover - network path
                 self.logger.error("Failed to connect to ClickHouse", error=str(e))
                 raise
 
             try:
-                connector = ClickHouseConnector(
+                connector = clickhouse_connector_cls(
                     client,
                     insert_settings=_build_clickhouse_insert_settings(),
                     **ch_conf.configuration.model_dump(),
                 )
-                table_manager = TableManager(connector)
+                table_manager = table_manager_cls(connector)
                 await table_manager.create_all_tables()
                 self.logger.info("ClickHouse initialization complete")
             finally:
@@ -325,14 +383,13 @@ class QueueCommands:
             perf_conf = settings.performance
             ch_conf = settings.clickhouse
             queue_conf = settings.ingest.rabbitmq
-
-            pool_mgr = get_pool_manager(maxsize=perf_conf.db_pool_size)
+            clickhouse_connector_cls, _ = _clickhouse_connector_classes()
+            rabbitmq_batch_worker_cls = _rabbitmq_batch_worker()
+            retry_clickhouse_startup = _retry_clickhouse_startup()
 
             async def _create_ready_client():
                 client = await get_async_client(
-                    **ch_conf.connection.as_client_kwargs(),
-                    query_limit=0,
-                    pool_mgr=pool_mgr,
+                    **_build_clickhouse_client_kwargs(perf_conf, ch_conf),
                 )
                 try:
                     query = await client.query(_CH_READINESS_QUERY)
@@ -351,12 +408,12 @@ class QueueCommands:
                 _create_ready_client,
             )
 
-            connector = ClickHouseConnector(
+            connector = clickhouse_connector_cls(
                 client,
                 insert_settings=_build_clickhouse_insert_settings(require_wait=True),
                 **ch_conf.configuration.model_dump(),
             )
-            worker = await RabbitMQBatchWorker.create(connector, queue_conf)
+            worker = await rabbitmq_batch_worker_cls.create(connector, queue_conf)
 
             # Install a SIGTERM handler so docker/k8s shutdown cancels the
             # running task, letting the finally blocks flush and close cleanly.

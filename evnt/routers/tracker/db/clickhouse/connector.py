@@ -4,16 +4,20 @@ ClickHouse database connector for evnt.
 This module provides a connection to ClickHouse.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import structlog
-from clickhouse_connect.driver.asyncclient import AsyncClient
 from clickhouse_connect.driver.exceptions import ClickHouseError, DatabaseError
 from core.constants import CLICKHOUSE_ASYNC_SETTINGS
 from core.tracing import async_capture_span
 from routers.tracker.db.clickhouse.schemas.snowplow import ColumnDef, TupleColumnDef
+
+if TYPE_CHECKING:
+    from clickhouse_connect.driver.asyncclient import AsyncClient
 
 logger = structlog.get_logger(__name__)
 

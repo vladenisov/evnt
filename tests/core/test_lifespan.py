@@ -72,6 +72,49 @@ def test_cache_health_checker_uses_performance_config(monkeypatch):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
+async def test_create_clickhouse_client_uses_async_connector_limits(
+    monkeypatch,
+    anyio_backend,
+):
+    client_kwargs = {}
+
+    async def _fake_get_async_client(**kwargs):
+        client_kwargs.update(kwargs)
+        return "client"
+
+    monkeypatch.setattr(lifespan_module, "get_async_client", _fake_get_async_client)
+    monkeypatch.setattr(
+        lifespan_module,
+        "PERFORMANCE_CONFIG",
+        SimpleNamespace(db_pool_size=7),
+    )
+    monkeypatch.setattr(
+        lifespan_module,
+        "CLICKHOUSE_CONFIG",
+        SimpleNamespace(
+            connection=SimpleNamespace(
+                as_client_kwargs=lambda: {
+                    "host": "clickhouse",
+                    "port": 8123,
+                },
+            ),
+        ),
+    )
+
+    client = await lifespan_module._create_clickhouse_client()
+
+    assert client == "client"
+    assert client_kwargs == {
+        "host": "clickhouse",
+        "port": 8123,
+        "query_limit": 0,
+        "connector_limit": 7,
+        "connector_limit_per_host": 7,
+    }
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_retry_clickhouse_startup_waits_until_connection_is_ready(
     monkeypatch,
     anyio_backend,
