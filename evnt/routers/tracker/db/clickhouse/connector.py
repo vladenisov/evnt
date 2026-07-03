@@ -207,12 +207,14 @@ class ClickHouseConnector:
         a sampling-design decision, out of scope for value sanitization.
         """
 
-        if value is not None:
+        if type_name == "UUID":
+            if value in (None, ""):
+                value = _ZERO_UUID
+            elif isinstance(value, str):
+                value = UUID(value)
             return value
         if type_name == "String" or type_name.startswith("LowCardinality(String"):
-            return ""
-        if type_name == "UUID":
-            return _ZERO_UUID
+            return "" if value is None else value
         return value
 
     async def insert_batch(

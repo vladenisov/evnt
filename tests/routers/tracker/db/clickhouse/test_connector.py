@@ -1,8 +1,11 @@
+from uuid import UUID
+
 import pytest
 from routers.tracker.db.clickhouse.connector import ClickHouseConnector
 from routers.tracker.db.clickhouse.schemas import register_fields
 from routers.tracker.db.clickhouse.schemas.snowplow import (
     STRING,
+    UUID as CLICKHOUSE_UUID,
     ColumnDef,
     TupleColumnDef,
 )
@@ -160,6 +163,14 @@ register_fields(
 )
 
 
+register_fields(
+    "test_uuid_events",
+    [
+        ColumnDef(payload_name="eid", name="event_id", type=CLICKHOUSE_UUID),
+    ],
+)
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_insert_batch_sanitizes_none_for_string_columns(anyio_backend):
@@ -184,3 +195,32 @@ async def test_insert_batch_sanitizes_none_for_string_columns(anyio_backend):
     assert client.calls[0]["table_name"] == "evnt.tuple_events_local"
     assert client.calls[0]["column_names"] == ["foo", "resolution"]
     assert client.calls[0]["data"] == [["", ("", "1280x720", "")]]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
+async def test_insert_batch_converts_uuid_strings_from_json_queue(anyio_backend):
+    client = _FakeClient()
+    connector = ClickHouseConnector(
+        client,
+        database="evnt",
+        tables={
+            "test_uuid_events": {
+                "local": {"name": "uuid_events_local"},
+                "distributed": {"name": "uuid_events_distributed"},
+            },
+        },
+    )
+
+    await connector.insert_batch(
+        [
+            {"eid": None},
+            {"eid": "94eb9eca-a77f-4c08-b90c-1260efde3cc5"},
+        ],
+        table_group="test_uuid_events",
+    )
+
+    assert client.calls[0]["data"] == [
+        [UUID("00000000-0000-0000-0000-000000000000")],
+        [UUID("94eb9eca-a77f-4c08-b90c-1260efde3cc5")],
+    ]
