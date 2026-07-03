@@ -277,9 +277,10 @@ class RabbitMQBatchWorker:
         self.pending_batches: dict[str, list[PendingMessage]] = defaultdict(list)
         self.pending_row_counts: dict[str, int] = defaultdict(int)
         # Per-table-group consecutive insert-failure counts, used to drive a
-        # capped exponential backoff applied in ``run`` BETWEEN iterations
+        # capped exponential backoff applied in ``run`` BETWEEN retry attempts
         # (never while holding/awaiting an in-flight message).
         self.failure_counts: dict[str, int] = defaultdict(int)
+        self._backoff_applied_counts: dict[str, int] = {}
 
     @classmethod
     async def create(
@@ -368,10 +369,24 @@ class RabbitMQBatchWorker:
         delay = self.retry_delay * (2 ** (max_failures - 1))
         return min(delay, self.MAX_BACKOFF_SECONDS)
 
-    async def _apply_backoff(self) -> None:
-        """Sleep for the capped exponential backoff between run iterations."""
+    def _pending_backoff_seconds(self) -> float:
+        """Return delay for failures that have not already backed off."""
 
-        delay = self._backoff_seconds()
+        unapplied_failures = (
+            failure_count
+            for table_group, failure_count in self.failure_counts.items()
+            if failure_count > self._backoff_applied_counts.get(table_group, 0)
+        )
+        max_failures = max(unapplied_failures, default=0)
+        if max_failures <= 0:
+            return 0.0
+        delay = self.retry_delay * (2 ** (max_failures - 1))
+        return min(delay, self.MAX_BACKOFF_SECONDS)
+
+    async def _apply_backoff(self) -> None:
+        """Sleep once for each newly observed capped backoff level."""
+
+        delay = self._pending_backoff_seconds()
         if delay <= 0:
             return
         logger.warning(
@@ -384,6 +399,7 @@ class RabbitMQBatchWorker:
         # outage cannot make the healthcheck see a stale file and trigger a
         # spurious restart while the worker is healthy and retrying.
         self._mark_alive()
+        self._backoff_applied_counts = dict(self.failure_counts)
 
     def _mark_alive(self) -> None:
         """Record worker liveness; never crash the worker on I/O errors."""
@@ -574,6 +590,7 @@ class RabbitMQBatchWorker:
         succeeded = await self._flush_pending_messages(table_group, pending)
         if succeeded:
             self.failure_counts.pop(table_group, None)
+            self._backoff_applied_counts.pop(table_group, None)
         else:
             self.failure_counts[table_group] += 1
 
