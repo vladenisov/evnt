@@ -12,7 +12,12 @@ from uuid import UUID
 import pytest
 from core.config import ClickHouseConfiguration
 from routers.tracker.db.clickhouse.connector import ClickHouseConnector
-from routers.tracker.db.clickhouse.schemas.snowplow import JSON, STRING, ColumnDef
+from routers.tracker.db.clickhouse.schemas.snowplow import (
+    JSON,
+    STRING,
+    ColumnDef,
+    snowplow_fields,
+)
 from routers.tracker.db.clickhouse.table_manager import TableManager
 
 
@@ -29,12 +34,23 @@ class _RecordingConnector:
         self.commands.append(query)
 
 
-def test_create_expression_emits_declared_default():
+def test_create_expression_emits_quoted_json_default():
     # A column that declares only default_expression still gets DEFAULT in DDL.
-    col = ColumnDef(payload_name="x", name="extra", type=JSON, default_expression="{}")
+    col = ColumnDef(
+        payload_name="x",
+        name="extra",
+        type=JSON,
+        default_expression="'{}'",
+    )
     expr = col.create_expression
-    assert "DEFAULT {}" in expr
-    assert expr.startswith("`extra` JSON")
+    assert expr == "`extra` JSON DEFAULT '{}'"
+
+
+def test_snowplow_json_defaults_are_quoted():
+    expressions = {field.name: field.create_expression for field in snowplow_fields}
+
+    for field_name in ("amp", "user_data", "geolocation", "extra"):
+        assert expressions[field_name].endswith("JSON DEFAULT '{}'")
 
 
 def test_create_expression_respects_explicit_default_type():

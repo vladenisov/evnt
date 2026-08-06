@@ -217,7 +217,7 @@ snowplow_fields: list[ColumnDef | TupleColumnDef] = [
         payload_name="amp",
         name="amp",
         type=JSON,
-        default_expression="{}",
+        default_expression="'{}'",
     ),
     ColumnDef(payload_name="duid", name="device_id", type=UUID),
     ColumnDef(
@@ -275,14 +275,14 @@ snowplow_fields: list[ColumnDef | TupleColumnDef] = [
         payload_name="user_data",
         name="user_data",
         type=JSON,
-        default_expression="{}",
+        default_expression="'{}'",
     ),
     ColumnDef(payload_name="user_ip", name="user_ip", type=IPV4),
     ColumnDef(
         payload_name="geolocation",
         name="geolocation",
         type=JSON,
-        default_expression="{}",
+        default_expression="'{}'",
     ),
     ColumnDef(
         payload_name="user_agent",
@@ -436,7 +436,7 @@ snowplow_fields: list[ColumnDef | TupleColumnDef] = [
         payload_name="extra",
         name="extra",
         type=JSON,
-        default_expression="{}",
+        default_expression="'{}'",
     ),
     TupleColumnDef(
         name="tracker",
