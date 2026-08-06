@@ -146,12 +146,13 @@ Redirects are **not** followed, so an allowlisted host cannot bounce the proxy t
 | `EVNT_INGEST__RABBITMQ__PORT` | `5672` |
 | `EVNT_INGEST__RABBITMQ__QUEUE_NAME` | `evnt.ingest` |
 | `EVNT_INGEST__RABBITMQ__BATCH_SIZE` | `500` |
+| `EVNT_INGEST__RABBITMQ__INSERT_TIMEOUT_SECONDS` | `60` |
 
 On startup the app (and, in `rabbitmq` mode, the worker) retries the ClickHouse connection until `startup_timeout_seconds` elapses.
 
 ### RabbitMQ worker
 
-In `rabbitmq` mode a separate worker drains the queue and batch-inserts into ClickHouse (`cli.py queue worker`). It shuts down cleanly on `SIGTERM` (final flush + close), publishes to the failed queue with publisher confirms to avoid silent loss, and backs off with capped exponential delay on downstream outages.
+In `rabbitmq` mode a separate worker drains the queue and batch-inserts into ClickHouse (`cli.py queue worker`). It shuts down cleanly on `SIGTERM` (final flush + close), publishes to the failed queue with publisher confirms to avoid silent loss, times out and requeues a stuck ClickHouse insert, and backs off with capped exponential delay on downstream outages.
 
 The worker writes a liveness file that a dedicated healthcheck reads:
 

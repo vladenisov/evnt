@@ -7,6 +7,8 @@ worker's per-table-group backoff, table-name resolution, and failed-queue
 publish-failure fallback that ``test_rabbitmq.py`` does not.
 """
 
+import asyncio
+
 import pytest
 from clickhouse_connect.driver.exceptions import DataError
 from core.config import RabbitMQConfig
@@ -160,6 +162,11 @@ class _InsertRowsOnlySink:
         self.rows_calls.append((table_group, rows))
 
 
+class _HangingSink:
+    async def insert_batch(self, rows, table_group="evnt"):
+        await asyncio.Event().wait()
+
+
 def _worker(sink, channel=None, **overrides):
     config_data = {"batch_size": 10, "batch_timeout_ms": 1000, "retry_delay_ms": 100}
     config_data.update(overrides)
@@ -208,6 +215,20 @@ async def test_flush_failure_increments_failure_count_then_resets(anyio_backend)
 
     assert "evnt" not in worker.failure_counts
     assert msg2.acked is True
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
+async def test_flush_timeout_requeues_messages_and_records_failure(anyio_backend):
+    worker = _worker(_HangingSink(), insert_timeout_seconds=0.01)
+    msg = _FakeMessage(QueuedInsertPayload(rows=[{"id": 1}]))
+    await worker.add_message(msg)
+
+    await worker.flush_table_group("evnt")
+
+    assert msg.nacked is True
+    assert msg.acked is False
+    assert worker.failure_counts["evnt"] == 1
 
 
 @pytest.mark.anyio

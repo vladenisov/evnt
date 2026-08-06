@@ -40,6 +40,7 @@ from .constants import (
     DEFAULT_RABBITMQ_BATCH_TIMEOUT_MS,
     DEFAULT_RABBITMQ_CONNECT_TIMEOUT_SECONDS,
     DEFAULT_RABBITMQ_HOST,
+    DEFAULT_RABBITMQ_INSERT_TIMEOUT_SECONDS,
     DEFAULT_RABBITMQ_PORT,
     DEFAULT_RABBITMQ_PREFETCH_COUNT,
     DEFAULT_RABBITMQ_QUEUE_NAME,
@@ -334,6 +335,10 @@ class RabbitMQConfig(BaseModel):
     batch_size: int = Field(default=DEFAULT_RABBITMQ_BATCH_SIZE, gt=0)
     batch_timeout_ms: int = Field(default=DEFAULT_RABBITMQ_BATCH_TIMEOUT_MS, gt=0)
     retry_delay_ms: int = Field(default=DEFAULT_RABBITMQ_RETRY_DELAY_MS, gt=0)
+    insert_timeout_seconds: float = Field(
+        default=DEFAULT_RABBITMQ_INSERT_TIMEOUT_SECONDS,
+        gt=0,
+    )
     connect_timeout_seconds: int = Field(
         default=DEFAULT_RABBITMQ_CONNECT_TIMEOUT_SECONDS,
         gt=0,

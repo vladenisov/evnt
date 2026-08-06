@@ -117,7 +117,11 @@ async def test_run_does_not_cancel_queue_iterator_on_flush_timeout(anyio_backend
     task = asyncio.create_task(worker.run())
     await asyncio.sleep(0.05)
     iterator.release()
-    await task
+    with pytest.raises(
+        RuntimeError,
+        match="RabbitMQ queue iterator stopped unexpectedly",
+    ):
+        await task
 
     assert iterator.cancelled is False
     assert sink.calls == [("evnt", [{"id": 1}])]
@@ -159,7 +163,11 @@ async def test_run_applies_backoff_once_per_failure_level(
     monkeypatch.setattr(rabbitmq_module.asyncio, "sleep", fake_sleep)
     monkeypatch.setattr(worker, "_heartbeat_loop", heartbeat_loop)
 
-    await worker.run()
+    with pytest.raises(
+        RuntimeError,
+        match="RabbitMQ queue iterator stopped unexpectedly",
+    ):
+        await worker.run()
 
     assert sleep_calls == [4.0]
     assert sink.calls == [("evnt", [{"id": 1}, {"id": 2}])]

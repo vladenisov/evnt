@@ -274,6 +274,7 @@ class RabbitMQBatchWorker:
         self.failed_queue_name = config.resolved_failed_queue_name
         self.flush_interval = config.batch_timeout_ms / _MS_PER_SECOND
         self.retry_delay = config.retry_delay_ms / _MS_PER_SECOND
+        self.insert_timeout = config.insert_timeout_seconds
         self.pending_batches: dict[str, list[PendingMessage]] = defaultdict(list)
         self.pending_row_counts: dict[str, int] = defaultdict(int)
         # Per-table-group consecutive insert-failure counts, used to drive a
@@ -338,8 +339,14 @@ class RabbitMQBatchWorker:
                         await self.flush_all()
                         self._mark_alive()
                         continue
-                    except StopAsyncIteration:
-                        break
+                    except StopAsyncIteration as exc:
+                        logger.error(
+                            "RabbitMQ queue iterator stopped unexpectedly",
+                            queue_name=self.config.queue_name,
+                        )
+                        raise RuntimeError(
+                            "RabbitMQ queue iterator stopped unexpectedly",
+                        ) from exc
 
                     next_message_task = None
                     await self.add_message(message)
@@ -512,7 +519,8 @@ class RabbitMQBatchWorker:
         rows = [row for item in pending for row in item.payload.rows]
         rows_count = len(rows)
         try:
-            await self._insert_rows(rows, table_group)
+            async with asyncio.timeout(self.insert_timeout):
+                await self._insert_rows(rows, table_group)
         except DataError as exc:
             if len(pending) == 1:
                 logger.warning(
@@ -553,13 +561,22 @@ class RabbitMQBatchWorker:
             second = await self._flush_pending_messages(table_group, pending[midpoint:])
             return first and second
         except Exception as exc:
-            logger.error(
-                "Batch insert failed, requeueing messages",
-                error=str(exc),
-                table_group=table_group,
-                rows_count=rows_count,
-                messages_count=len(pending),
-            )
+            if isinstance(exc, TimeoutError):
+                logger.error(
+                    "Batch insert timed out, requeueing messages",
+                    table_group=table_group,
+                    rows_count=rows_count,
+                    messages_count=len(pending),
+                    insert_timeout_seconds=self.insert_timeout,
+                )
+            else:
+                logger.error(
+                    "Batch insert failed, requeueing messages",
+                    error=str(exc),
+                    table_group=table_group,
+                    rows_count=rows_count,
+                    messages_count=len(pending),
+                )
             for item in pending:
                 await item.message.nack(requeue=True)
             return False
