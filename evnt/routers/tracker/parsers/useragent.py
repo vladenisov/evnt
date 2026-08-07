@@ -2,8 +2,10 @@
 User agent parsing functionality.
 """
 
+import asyncio
+from collections import OrderedDict
 from copy import copy
-from functools import lru_cache
+from threading import Lock
 from typing import Final
 
 from core.tracing import capture_span
@@ -19,6 +21,8 @@ _MUTABLE_USER_AGENT_FIELDS: Final[tuple[str, ...]] = (
     "device_extra",
 )
 crawler_detect = CrawlerDetect()
+_user_agent_cache: OrderedDict[str, UserAgentModel] = OrderedDict()
+_user_agent_cache_lock = Lock()
 
 
 def _join_version(parts: list[str | None]) -> list[str]:
@@ -28,12 +32,38 @@ def _join_version(parts: list[str | None]) -> list[str]:
 def clear_user_agent_cache() -> None:
     """Clear cached user-agent parse results."""
 
-    _parse_agent_cached.cache_clear()
+    with _user_agent_cache_lock:
+        _user_agent_cache.clear()
 
 
-@lru_cache(maxsize=USER_AGENT_CACHE_SIZE)
-def _parse_agent_cached(string: str) -> UserAgentModel:
-    """Parse a non-null user-agent string into cacheable structured data."""
+def _get_cached_agent(string: str) -> UserAgentModel | None:
+    """Return and refresh an LRU entry without parsing the user agent."""
+
+    with _user_agent_cache_lock:
+        data = _user_agent_cache.pop(string, None)
+        if data is not None:
+            _user_agent_cache[string] = data
+        return data
+
+
+def _store_cached_agent(string: str, data: UserAgentModel) -> UserAgentModel:
+    """Store one parsed agent and evict the least-recently-used entry."""
+
+    with _user_agent_cache_lock:
+        # Concurrent misses may parse the same value in parallel. Preserve the
+        # first cached object so callers still share one immutable hot-path value.
+        cached = _user_agent_cache.pop(string, None)
+        if cached is not None:
+            data = cached
+        _user_agent_cache[string] = data
+        if len(_user_agent_cache) > USER_AGENT_CACHE_SIZE:
+            _user_agent_cache.popitem(last=False)
+        return data
+
+
+def _parse_agent_uncached(string: str) -> UserAgentModel:
+    """Parse a non-null user-agent string without consulting the LRU cache."""
+
     data = UserAgentModel.model_construct(user_agent=string)
 
     if not string:
@@ -49,27 +79,23 @@ def _parse_agent_cached(string: str) -> UserAgentModel:
     browser = ua.user_agent
     if browser is not None:
         data.browser_family = browser.family or ""
-        data.browser_version = _join_version(
-            [
-                browser.major,
-                browser.minor,
-                browser.patch,
-                browser.patch_minor,
-            ]
-        )
+        data.browser_version = _join_version([
+            browser.major,
+            browser.minor,
+            browser.patch,
+            browser.patch_minor,
+        ])
         data.browser_version_string = ".".join(data.browser_version)
 
     os = ua.os
     if os is not None:
         data.os_family = os.family or ""
-        data.os_version = _join_version(
-            [
-                os.major,
-                os.minor,
-                os.patch,
-                os.patch_minor,
-            ]
-        )
+        data.os_version = _join_version([
+            os.major,
+            os.minor,
+            os.patch,
+            os.patch_minor,
+        ])
         data.os_version_string = ".".join(data.os_version)
 
     device = ua.device
@@ -80,6 +106,15 @@ def _parse_agent_cached(string: str) -> UserAgentModel:
             data.device_extra["family"] = device.family
 
     return data
+
+
+def _parse_agent_cached(string: str) -> UserAgentModel:
+    """Return a cached user agent or parse and cache a missing value."""
+
+    data = _get_cached_agent(string)
+    if data is not None:
+        return data
+    return _store_cached_agent(string, _parse_agent_uncached(string))
 
 
 def _copy_user_agent(data: UserAgentModel) -> UserAgentModel:
@@ -107,3 +142,13 @@ def parse_agent_for_insert(string: str | None) -> UserAgentModel:
     """
 
     return _parse_agent_cached(string or "")
+
+
+async def parse_agent_for_insert_async(string: str | None) -> UserAgentModel:
+    """Return cache hits inline and offload only real parser work to a thread."""
+
+    normalized = string or ""
+    data = _get_cached_agent(normalized)
+    if data is not None:
+        return data
+    return await asyncio.to_thread(_parse_agent_cached, normalized)
