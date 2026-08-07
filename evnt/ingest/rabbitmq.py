@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
@@ -337,7 +338,6 @@ class RabbitMQBatchWorker:
                         )
                     except TimeoutError:
                         await self.flush_all()
-                        self._mark_alive()
                         continue
                     except StopAsyncIteration as exc:
                         logger.error(
@@ -350,7 +350,6 @@ class RabbitMQBatchWorker:
 
                     next_message_task = None
                     await self.add_message(message)
-                    self._mark_alive()
         finally:
             heartbeat_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -409,11 +408,17 @@ class RabbitMQBatchWorker:
         self._backoff_applied_counts = dict(self.failure_counts)
 
     def _mark_alive(self) -> None:
-        """Record worker liveness; never crash the worker on I/O errors."""
+        """Atomically record worker liveness without exposing a partial file."""
 
+        temporary_path = WORKER_LIVENESS_PATH.with_name(
+            f".{WORKER_LIVENESS_PATH.name}.{os.getpid()}.tmp",
+        )
         try:
-            WORKER_LIVENESS_PATH.write_text(str(time.time()))
+            temporary_path.write_text(str(time.time()))
+            os.replace(temporary_path, WORKER_LIVENESS_PATH)
         except OSError as exc:
+            with suppress(OSError):
+                temporary_path.unlink()
             logger.warning(
                 "Failed to write worker liveness file",
                 error=str(exc),
