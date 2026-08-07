@@ -76,6 +76,21 @@ _MUTABLE_USER_AGENT_FIELDS = (
     "device_extra",
 )
 
+# Resolve static InsertModel defaults once. Passing the complete set of static
+# fields to model_construct avoids Pydantic deep-copying every mutable default
+# for every event. Fields backed by a default_factory stay unresolved here so a
+# partially constructed PayloadElementModel still gets fresh UUID/timestamps.
+_INSERT_MODEL_DEFAULTS = {
+    field_name: value
+    for field_name, value in InsertModel.model_construct().__dict__.items()
+    if InsertModel.model_fields[field_name].default_factory is None
+}
+_MUTABLE_INSERT_DEFAULT_FIELDS = tuple(
+    field_name
+    for field_name, value in _INSERT_MODEL_DEFAULTS.items()
+    if isinstance(value, (dict, list, set))
+)
+
 
 def _coalesce_dimension_value(value: Any, fallback: str) -> str:
     """Keep an existing dimension when a context tries to overwrite it with null."""
@@ -465,7 +480,11 @@ def _build_initial_model(
     # must uphold: ``ip`` is an already-validated IPv4Address.
     assert isinstance(ip, IPv4Address)
 
-    data = user_agent.__dict__.copy()
+    data = _INSERT_MODEL_DEFAULTS.copy()
+    for field_name in _MUTABLE_INSERT_DEFAULT_FIELDS:
+        data[field_name] = copy(data[field_name])
+
+    data.update(user_agent.__dict__)
     for field_name in _MUTABLE_USER_AGENT_FIELDS:
         data[field_name] = copy(data[field_name])
     data.update(element.__dict__)

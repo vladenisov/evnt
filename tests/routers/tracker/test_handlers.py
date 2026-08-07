@@ -77,7 +77,7 @@ async def test_process_data_logs_iglu_warning_but_returns_row(
     )
 
 
-def test_build_initial_model_skips_revalidation_and_copies_ua_mutables(
+def test_build_initial_model_skips_revalidation_and_copies_mutable_defaults(
     monkeypatch,
 ):
     runtime_payload_module = importlib.import_module("routers.tracker.parsers.payload")
@@ -113,6 +113,9 @@ def test_build_initial_model_skips_revalidation_and_copies_ua_mutables(
     )
     first.browser_version.append("mutated")
     first.device_extra["family"] = "mutated"
+    first.ue["event"] = {"value": 1}
+    first.extra["context"] = {"value": 2}
+    first.screen["name"] = "mutated"
     second = runtime_payload_module._build_initial_model(
         body,
         user_agent,
@@ -123,3 +126,6 @@ def test_build_initial_model_skips_revalidation_and_copies_ua_mutables(
     assert first.lang == "ru-RU"
     assert second.browser_version == ["123"]
     assert second.device_extra == {"family": "Desktop"}
+    assert second.ue == {}
+    assert second.extra == {}
+    assert second.screen == {}
