@@ -192,7 +192,7 @@ async def proxy(
     # (standard web ports by default); a target with no explicit port uses the
     # scheme default and is always permitted.
     if target_url.port is not None and target_url.port not in _get_proxy_allowed_ports(
-        request
+        request,
     ):
         raise HTTPException(status_code=403, detail="Proxy target port not allowed")
 

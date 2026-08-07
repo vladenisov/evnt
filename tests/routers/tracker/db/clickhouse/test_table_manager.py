@@ -130,7 +130,7 @@ async def test_create_local_table_emits_full_ddl_with_columns(anyio_backend):
     assert len(connector.commands) == 1
     ddl = connector.commands[0]
     assert ddl.startswith(
-        "CREATE TABLE IF NOT EXISTS evnt.events_local ON CLUSTER prod_cluster ("
+        "CREATE TABLE IF NOT EXISTS evnt.events_local ON CLUSTER prod_cluster (",
     )
     assert "`foo` String, `bar` String" in ddl
     assert "ENGINE = MergeTree()" in ddl

@@ -329,7 +329,7 @@ class ScriptsCommands:
             url = f"{base_url}/{filename}"
             self.logger.info("Downloading", url=url)
             resp = httpx.get(
-                url, timeout=_SCRIPT_DOWNLOAD_TIMEOUT_SECONDS, follow_redirects=True
+                url, timeout=_SCRIPT_DOWNLOAD_TIMEOUT_SECONDS, follow_redirects=True,
             )
             if resp.status_code != HTTP_200_OK:
                 raise RuntimeError(

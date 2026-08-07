@@ -106,7 +106,7 @@ def _configure_routers(app: FastAPI) -> None:
     # downloaded yet (they are fetched at container build time, and the dir is
     # gitignored). Requests to /static/* simply 404 until the dir is populated.
     app.mount(
-        "/static", StaticFiles(directory="static", check_dir=False), name="static"
+        "/static", StaticFiles(directory="static", check_dir=False), name="static",
     )
 
     # Mount demo static assets if enabled (there are no dynamic demo routes).

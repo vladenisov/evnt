@@ -92,9 +92,13 @@ class Snowplow(BaseModel):
         return header_name
 
 
-_VALID_LOG_LEVELS: frozenset[str] = frozenset(
-    {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
-)
+_VALID_LOG_LEVELS: frozenset[str] = frozenset({
+    "DEBUG",
+    "INFO",
+    "WARNING",
+    "ERROR",
+    "CRITICAL",
+})
 
 
 class LoggingConfig(BaseModel):
@@ -110,7 +114,7 @@ class LoggingConfig(BaseModel):
         upper_v = v.upper()
         if upper_v not in _VALID_LOG_LEVELS:
             raise ValueError(
-                f"Invalid log level: {v}. Must be one of {_VALID_LOG_LEVELS}"
+                f"Invalid log level: {v}. Must be one of {_VALID_LOG_LEVELS}",
             )
         return upper_v
 
@@ -271,22 +275,20 @@ class ClickHouseConfiguration(BaseModel):
                 "name": "local",
                 "engine": "MergeTree()",
                 "partition_by": "toYYYYMM(time)",
-                "order_by": ", ".join(
-                    [
-                        "app",
-                        "platform",
-                        "app_id",
-                        "event_type",
-                        "toDate(time)",
-                        "event.category",
-                        "event.action",
-                        "page",
-                        "device_id",
-                        "cityHash64(device_id)",
-                        "session_id",
-                        "time",
-                    ]
-                ),
+                "order_by": ", ".join([
+                    "app",
+                    "platform",
+                    "app_id",
+                    "event_type",
+                    "toDate(time)",
+                    "event.category",
+                    "event.action",
+                    "page",
+                    "device_id",
+                    "cityHash64(device_id)",
+                    "session_id",
+                    "time",
+                ]),
                 "sample_by": "cityHash64(device_id)",
                 "settings": "index_granularity = 8192",
             },

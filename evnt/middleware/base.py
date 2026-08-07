@@ -65,7 +65,7 @@ class BaseMiddleware(BaseHTTPMiddleware):
 
             # Call next handler, using the modified request when one was returned
             response = await call_next(
-                modified_request if isinstance(modified_request, Request) else request
+                modified_request if isinstance(modified_request, Request) else request,
             )
 
             # Post-processing hook

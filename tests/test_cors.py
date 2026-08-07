@@ -40,7 +40,7 @@ def test_security_config_allows_intentional_credentialed_wildcard():
 
 
 def test_create_app_allows_credentialed_cors_for_explicit_origins(
-    monkeypatch, app_root
+    monkeypatch, app_root,
 ):
     monkeypatch.chdir(app_root)
     main_module = _reload_main_module()
@@ -73,7 +73,7 @@ def test_create_app_allows_credentialed_cors_for_explicit_origins(
 
 
 def test_create_app_defaults_to_credentialed_cors_for_all_origins(
-    monkeypatch, app_root
+    monkeypatch, app_root,
 ):
     monkeypatch.chdir(app_root)
     main_module = _reload_main_module()

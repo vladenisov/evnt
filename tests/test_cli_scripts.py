@@ -27,7 +27,7 @@ def test_cli_scripts_import_does_not_require_clickhouse_async_stack():
 
         cli.CLI().scripts
         print("ok")
-        """
+        """,
     )
 
     result = subprocess.run(
