@@ -9,7 +9,7 @@ branches, plus ``ClickHouseHealthChecker.check`` success and failure.
 from types import SimpleNamespace
 
 import pytest
-from core.healthcheck import ClickHouseHealthChecker, probe
+from core.healthcheck import ClickHouseHealthChecker, liveness, probe
 
 
 class _FakeChecker:
@@ -38,6 +38,15 @@ def _request(checker, ingest_mode="clickhouse", connector=None):
         connector=connector or _FakeConnector(),
     )
     return SimpleNamespace(app=SimpleNamespace(state=state))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
+async def test_liveness_does_not_check_dependencies(anyio_backend):
+    response = await liveness()
+
+    assert response.status_code == 204
+    assert response.body == b""
 
 
 @pytest.mark.anyio

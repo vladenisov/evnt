@@ -8,11 +8,11 @@ import asyncio
 from collections.abc import Callable
 
 import structlog
-from fastapi import Request
+from fastapi import Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from starlette.status import HTTP_200_OK, HTTP_502_BAD_GATEWAY
+from starlette.status import HTTP_200_OK, HTTP_204_NO_CONTENT, HTTP_502_BAD_GATEWAY
 
 from .protocols import HealthChecker
 
@@ -93,6 +93,12 @@ class ClickHouseHealthChecker:
             healthy = False
 
         return {"clickhouse": healthy}
+
+
+async def liveness() -> Response:
+    """Report that the application event loop is responsive."""
+
+    return Response(status_code=HTTP_204_NO_CONTENT)
 
 
 async def probe(request: Request) -> HealthProbeResponse:

@@ -215,9 +215,13 @@ class PerformanceConfig(BaseModel):
     max_concurrent_connections: int = Field(default=100, gt=0)
     db_pool_size: int = Field(default=5, gt=0)
     db_pool_overflow: int = Field(default=10, gt=0)
+    user_agent_cache_size: int = Field(default=32768, ge=0)
+    cpu_task_concurrency: int = Field(default=8, gt=0)
     healthcheck_cache_ttl_seconds: float = Field(default=2.0, ge=0.0)
     enable_access_log: bool = True
-    access_log_excluded_paths: list[str] = []
+    # ``/live`` is polled by container orchestrators every few seconds and
+    # never carries useful information, so keep it out of the access log.
+    access_log_excluded_paths: list[str] = ["/live"]
     enable_brotli: bool = True
     brotli_excluded_paths: list[str] = []
 

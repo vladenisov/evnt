@@ -76,6 +76,16 @@ def _minimal_tp2_payload() -> dict:
     }
 
 
+def test_liveness_returns_204_without_initialized_backend(monkeypatch, app_root):
+    client = _build_client(monkeypatch, app_root, _RecordingConnector())
+
+    with client:
+        response = client.get("/live")
+
+    assert response.status_code == HTTP_NO_CONTENT
+    assert response.content == b""
+
+
 def test_tracker_post_returns_204_and_forwards_rows(monkeypatch, app_root):
     connector = _RecordingConnector()
     client = _build_client(monkeypatch, app_root, connector)

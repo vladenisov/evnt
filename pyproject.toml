@@ -106,6 +106,9 @@ known-first-party = ["evnt"]
 combine-as-imports = true
 
 [tool.ruff.format]
+# Match the `ruff-format --preview` invocation in .pre-commit-config.yaml, so a
+# bare `ruff format` does not fight the hook over collection literals.
+preview = true
 # Like Black, use double quotes for strings.
 quote-style = "double"
 # Like Black, indent with spaces, rather than tabs.

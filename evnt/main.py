@@ -9,7 +9,7 @@ from asgi_correlation_id.middleware import CorrelationIdMiddleware
 from brotli_asgi import BrotliMiddleware
 from core.config import settings
 from core.constants import APP_NAME, APP_VERSION
-from core.healthcheck import probe
+from core.healthcheck import liveness, probe
 from core.lifespan import lifespan
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
@@ -106,7 +106,9 @@ def _configure_routers(app: FastAPI) -> None:
     # downloaded yet (they are fetched at container build time, and the dir is
     # gitignored). Requests to /static/* simply 404 until the dir is populated.
     app.mount(
-        "/static", StaticFiles(directory="static", check_dir=False), name="static",
+        "/static",
+        StaticFiles(directory="static", check_dir=False),
+        name="static",
     )
 
     # Mount demo static assets if enabled (there are no dynamic demo routes).
@@ -195,6 +197,7 @@ def create_app() -> FastAPI:
 
     # Add healthcheck endpoint
     app.add_api_route("/", probe, methods=["GET"], include_in_schema=True)
+    app.add_api_route("/live", liveness, methods=["GET"], include_in_schema=False)
 
     # Configure integrations
     _configure_integrations(app)

@@ -8,6 +8,8 @@ publish-failure fallback that ``test_rabbitmq.py`` does not.
 """
 
 import asyncio
+from datetime import UTC, datetime
+from uuid import UUID
 
 import pytest
 from clickhouse_connect.driver.exceptions import DataError
@@ -101,6 +103,31 @@ async def test_publisher_insert_rows_publishes_persistent_message(anyio_backend)
     decoded = QueuedInsertPayload.model_validate_json(published["message"].body)
     assert decoded.table_group == "evnt"
     assert decoded.rows == [{"aid": "a"}, {"aid": "b"}]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
+async def test_publisher_serializes_typed_values_without_intermediate_copy(
+    anyio_backend,
+):
+    channel = _RecordingChannel()
+    publisher = _publisher(channel)
+    event_id = UUID("5a402e39-1997-4842-a9b0-0b59287052b6")
+    event_time = datetime(2026, 8, 10, 13, 27, 56, tzinfo=UTC)
+
+    await publisher.insert_rows(
+        [{"event_id": event_id, "time": event_time}],
+        table_group="evnt",
+    )
+
+    published = channel.default_exchange.published[0]["message"]
+    decoded = QueuedInsertPayload.model_validate_json(published.body)
+    assert decoded.rows == [
+        {
+            "event_id": str(event_id),
+            "time": "2026-08-10T13:27:56Z",
+        },
+    ]
 
 
 @pytest.mark.anyio

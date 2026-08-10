@@ -2,18 +2,19 @@
 User agent parsing functionality.
 """
 
-import asyncio
 from collections import OrderedDict
 from copy import copy
 from threading import Lock
 from typing import Final
 
+from core.concurrency import run_cpu_task
+from core.config import settings
 from core.tracing import capture_span
 from crawlerdetect import CrawlerDetect
 from routers.tracker.models.snowplow import UserAgentModel
 from ua_parser import parse
 
-USER_AGENT_CACHE_SIZE: Final[int] = 32768
+USER_AGENT_CACHE_SIZE: Final[int] = settings.performance.user_agent_cache_size
 _MUTABLE_USER_AGENT_FIELDS: Final[tuple[str, ...]] = (
     "browser_version",
     "browser_extra",
@@ -39,6 +40,9 @@ def clear_user_agent_cache() -> None:
 def _get_cached_agent(string: str) -> UserAgentModel | None:
     """Return and refresh an LRU entry without parsing the user agent."""
 
+    if USER_AGENT_CACHE_SIZE <= 0:
+        return None
+
     with _user_agent_cache_lock:
         data = _user_agent_cache.pop(string, None)
         if data is not None:
@@ -48,6 +52,11 @@ def _get_cached_agent(string: str) -> UserAgentModel | None:
 
 def _store_cached_agent(string: str, data: UserAgentModel) -> UserAgentModel:
     """Store one parsed agent and evict the least-recently-used entry."""
+
+    # A disabled cache would otherwise pay for the lock and the insert/evict
+    # pair on every event just to throw the entry away again.
+    if USER_AGENT_CACHE_SIZE <= 0:
+        return data
 
     with _user_agent_cache_lock:
         # Concurrent misses may parse the same value in parallel. Preserve the
@@ -151,4 +160,4 @@ async def parse_agent_for_insert_async(string: str | None) -> UserAgentModel:
     data = _get_cached_agent(normalized)
     if data is not None:
         return data
-    return await asyncio.to_thread(_parse_agent_cached, normalized)
+    return await run_cpu_task(_parse_agent_cached, normalized)

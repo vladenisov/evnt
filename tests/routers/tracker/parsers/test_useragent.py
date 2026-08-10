@@ -96,11 +96,11 @@ async def test_parse_agent_for_insert_async_offloads_only_cache_miss(
     user_agent = "Mozilla/5.0"
     thread_calls = []
 
-    async def _fake_to_thread(function, *args):
+    async def _fake_run_cpu_task(function, *args):
         thread_calls.append((function, args))
         return function(*args)
 
-    monkeypatch.setattr(useragent_module.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(useragent_module, "run_cpu_task", _fake_run_cpu_task)
     monkeypatch.setattr(useragent_module, "parse", lambda _: _parsed_user_agent())
     monkeypatch.setattr(
         useragent_module,
@@ -143,6 +143,29 @@ def test_user_agent_cache_evicts_least_recently_used_entry(monkeypatch):
     useragent_module.clear_user_agent_cache()
 
     assert parse_calls == ["ua-1", "ua-2", "ua-3", "ua-2"]
+
+
+def test_user_agent_cache_can_be_disabled(monkeypatch):
+    parse_calls = []
+
+    def _fake_parse(value):
+        parse_calls.append(value)
+        return _parsed_user_agent()
+
+    monkeypatch.setattr(useragent_module, "USER_AGENT_CACHE_SIZE", 0)
+    monkeypatch.setattr(useragent_module, "parse", _fake_parse)
+    monkeypatch.setattr(
+        useragent_module,
+        "crawler_detect",
+        SimpleNamespace(isCrawler=lambda _: False),
+    )
+
+    useragent_module.clear_user_agent_cache()
+    useragent_module.parse_agent_for_insert("Mozilla/5.0")
+    useragent_module.parse_agent_for_insert("Mozilla/5.0")
+    useragent_module.clear_user_agent_cache()
+
+    assert parse_calls == ["Mozilla/5.0", "Mozilla/5.0"]
 
 
 def test_parse_agent_handles_missing_header_without_parser(monkeypatch):

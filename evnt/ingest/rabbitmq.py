@@ -21,10 +21,10 @@ from aio_pika.abc import (
 )
 from aio_pika.exceptions import AuthenticationError, ProbableAuthenticationError
 from clickhouse_connect.driver.exceptions import DataError
+from core.concurrency import run_cpu_task
 from core.config import RabbitMQConfig
 from core.constants import WORKER_HEARTBEAT_SECONDS, WORKER_LIVENESS_PATH
 from core.protocols import RowSink
-from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 
 logger = structlog.get_logger(__name__)
@@ -63,6 +63,26 @@ class QueuedInsertPayload(BaseModel):
 
     table_group: str = "evnt"
     rows: list[dict[str, Any]] = Field(default_factory=list)
+
+
+def _encode_queued_insert_payload(
+    table_group: str,
+    rows: list[dict[str, Any]],
+) -> bytes:
+    """Serialize a queued insert without copying the rows first.
+
+    ``model_construct`` skips validation, which for ``list[dict[str, Any]]``
+    would only rebuild the list and every row dict. Rows must therefore already
+    hold values pydantic can serialize: JSON scalars, ``UUID``, ``datetime``,
+    IP addresses and plain containers of those. Anything else raises
+    ``PydanticSerializationError`` rather than being coerced.
+    """
+
+    payload = QueuedInsertPayload.model_construct(
+        table_group=table_group,
+        rows=rows,
+    )
+    return payload.model_dump_json().encode("utf-8")
 
 
 @dataclass(slots=True)
@@ -187,13 +207,9 @@ class RabbitMQPublisher:
             logger.debug("No rows to enqueue", table_group=table_group)
             return
 
-        encoded_rows = await asyncio.to_thread(jsonable_encoder, rows)
-        payload = QueuedInsertPayload(
-            table_group=table_group,
-            rows=encoded_rows,
-        )
+        body = await run_cpu_task(_encode_queued_insert_payload, table_group, rows)
         message = Message(
-            body=payload.model_dump_json().encode("utf-8"),
+            body=body,
             content_type="application/json",
             delivery_mode=DeliveryMode.PERSISTENT,
             type="evnt.insert",

@@ -2,7 +2,6 @@
 Payload parsing functionality for Snowplow events.
 """
 
-import asyncio
 import urllib.parse as urlparse
 from collections.abc import Callable
 from copy import copy
@@ -14,6 +13,7 @@ from uuid import UUID
 
 import orjson
 import structlog
+from core.concurrency import run_cpu_task
 from core.config import settings
 from core.tracing import async_capture_span, capture_span
 from routers.tracker.models.snowplow import (
@@ -397,7 +397,7 @@ async def parse_contexts(
         schema_uri = context["schema"]
         data = context["data"]
 
-        validation = await asyncio.to_thread(validate_iglu_payload, schema_uri, data)
+        validation = await run_cpu_task(validate_iglu_payload, schema_uri, data)
         _log_validation_result(
             validation,
             schema_uri=schema_uri,
@@ -418,7 +418,6 @@ async def parse_contexts(
         if handler is None:
             logger.warning(
                 "Schema has no parser",
-                data=data,
                 schema=schema,
                 schema_uri=schema_uri,
             )
@@ -447,7 +446,7 @@ async def parse_event(event: dict[str, Any] | None, model: InsertModel) -> Inser
 
     event_payload: dict[str, Any] = event["data"]
     schema_uri = event_payload.get("schema", "")
-    validation = await asyncio.to_thread(
+    validation = await run_cpu_task(
         validate_iglu_payload,
         schema_uri,
         event_payload.get("data"),

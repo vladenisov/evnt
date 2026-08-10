@@ -15,6 +15,7 @@ from clickhouse_connect import get_async_client
 from fastapi import FastAPI
 from routers.tracker.parsers.iglu import warm_iglu_schema_cache
 
+from .concurrency import run_cpu_task
 from .config import ClickHouseConfig, ProxyConfig, settings
 from .constants import DEFAULT_PROXY_TIMEOUT
 from .exceptions import DatabaseConnectionError
@@ -283,7 +284,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
         await _configure_proxy_http_client(application)
         # warm_known_iglu_schemas performs synchronous file I/O; run it in a
         # thread so it does not block the event loop during async startup.
-        await asyncio.to_thread(warm_known_iglu_schemas)
+        await run_cpu_task(warm_known_iglu_schemas)
         logger.info("Ingest backend initialized")
 
     except Exception as e:
