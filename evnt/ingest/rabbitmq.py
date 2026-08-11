@@ -21,7 +21,6 @@ from aio_pika.abc import (
 )
 from aio_pika.exceptions import AuthenticationError, ProbableAuthenticationError
 from clickhouse_connect.driver.exceptions import DataError
-from core.concurrency import run_cpu_task
 from core.config import RabbitMQConfig
 from core.constants import WORKER_HEARTBEAT_SECONDS, WORKER_LIVENESS_PATH
 from core.protocols import RowSink
@@ -207,7 +206,7 @@ class RabbitMQPublisher:
             logger.debug("No rows to enqueue", table_group=table_group)
             return
 
-        body = await run_cpu_task(_encode_queued_insert_payload, table_group, rows)
+        body = _encode_queued_insert_payload(table_group, rows)
         message = Message(
             body=body,
             content_type="application/json",

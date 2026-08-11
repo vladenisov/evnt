@@ -13,7 +13,6 @@ from uuid import UUID
 
 import orjson
 import structlog
-from core.concurrency import run_cpu_task
 from core.config import settings
 from core.tracing import async_capture_span, capture_span
 from routers.tracker.models.snowplow import (
@@ -397,7 +396,7 @@ async def parse_contexts(
         schema_uri = context["schema"]
         data = context["data"]
 
-        validation = await run_cpu_task(validate_iglu_payload, schema_uri, data)
+        validation = validate_iglu_payload(schema_uri, data)
         _log_validation_result(
             validation,
             schema_uri=schema_uri,
@@ -446,11 +445,7 @@ async def parse_event(event: dict[str, Any] | None, model: InsertModel) -> Inser
 
     event_payload: dict[str, Any] = event["data"]
     schema_uri = event_payload.get("schema", "")
-    validation = await run_cpu_task(
-        validate_iglu_payload,
-        schema_uri,
-        event_payload.get("data"),
-    )
+    validation = validate_iglu_payload(schema_uri, event_payload.get("data"))
     _log_validation_result(
         validation,
         schema_uri=schema_uri,
