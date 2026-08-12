@@ -360,7 +360,7 @@ requires-dist = [
     { name = "jsonschema", specifier = ">=4.25.1" },
     { name = "orjson", specifier = ">=3.10.16" },
     { name = "prometheus-fastapi-instrumentator", specifier = ">=7.1.0" },
-    { name = "pydantic-settings", specifier = ">=2.9.1" },
+    { name = "pydantic-settings", specifier = ">=2.14.2" },
     { name = "sentry-sdk", extras = ["fastapi"], marker = "extra == 'sentry'", specifier = ">=2.35.1" },
     { name = "structlog", specifier = ">=25.3.0" },
     { name = "ua-parser", extras = ["regex"], specifier = ">=1.0.1" },
