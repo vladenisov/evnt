@@ -22,10 +22,11 @@ from fastapi_structlog.middleware import (
     CurrentScopeSetMiddleware,
     StructlogMiddleware,
 )
+from middleware.body_limit import BodySizeLimitMiddleware
 from middleware.security import SecurityHeadersMiddleware
 from plugins.logger import init_logging, validation_exception_handler
 from routers.proxy import router as proxy_router
-from routers.tracker import router as app_router
+from routers.tracker import build_encrypted_router, router as app_router
 from starlette.middleware.cors import CORSMiddleware
 from starlette.types import Receive, Scope, Send
 
@@ -59,6 +60,13 @@ def _get_base_middleware() -> list[Middleware]:
             allow_methods=["*"],
             allow_headers=["*"],
             expose_headers=["*"],
+        ),
+        # Inside CORS so the 413 still carries the CORS headers a browser needs
+        # to surface it, but ahead of everything else: an oversized body should
+        # be refused before any other middleware does work on it.
+        Middleware(
+            BodySizeLimitMiddleware,
+            max_bytes=settings.security.max_request_body_bytes,
         ),
         Middleware(CurrentScopeSetMiddleware),
         Middleware(CorrelationIdMiddleware),
@@ -102,6 +110,10 @@ def _configure_routers(app: FastAPI) -> None:
     """Configure and include all routers."""
     app.include_router(app_router)
     app.include_router(proxy_router)
+    # Opt-in: mounting the sealed-payload endpoint only when it is configured
+    # keeps it off the surface of deployments that do not use it.
+    if settings.encryption.enabled:
+        app.include_router(build_encrypted_router())
     # check_dir=False so the app boots even when the static assets have not been
     # downloaded yet (they are fetched at container build time, and the dir is
     # gitignored). Requests to /static/* simply 404 until the dir is populated.

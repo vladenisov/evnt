@@ -21,7 +21,11 @@ import pytest
 PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
 APP_ROOT: Path = PROJECT_ROOT / "evnt"
 
-for _path in (PROJECT_ROOT, APP_ROOT):
+# ``tests/`` itself goes on the path too, so every suite can `from support
+# import ...` and share one copy of the HTTP scaffolding.
+TESTS_ROOT: Path = PROJECT_ROOT / "tests"
+
+for _path in (PROJECT_ROOT, APP_ROOT, TESTS_ROOT):
     _str = str(_path)
     if _str not in sys.path:
         sys.path.insert(0, _str)
@@ -35,3 +39,14 @@ def project_root() -> Path:
 @pytest.fixture(scope="session")
 def app_root() -> Path:
     return APP_ROOT
+
+
+@pytest.fixture
+def connector():
+    """A fake RowSink that records the rows a handler forwards."""
+    # Deferred: ``support`` is only importable once the sys.path setup above
+    # has run, which happens at module import time, after this file's own
+    # import block would have executed.
+    from support import RecordingConnector  # noqa: PLC0415
+
+    return RecordingConnector()

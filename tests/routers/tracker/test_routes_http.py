@@ -9,12 +9,10 @@ under test here is the HTTP/status/response-model contract -- payload parsing
 itself is covered by the unit tests under ``tests/routers/tracker/parsers/``.
 """
 
-import importlib
-from contextlib import asynccontextmanager
-
 from core.constants import CONTENT_TYPE_GIF, TRACKING_PIXEL
 from core.dependencies import get_db_connector
 from fastapi.testclient import TestClient
+from support import RecordingConnector, build_app, minimal_tp2_payload
 
 POST_ENDPOINT = "/tracker"
 GET_ENDPOINT = "/i"
@@ -22,62 +20,15 @@ HTTP_NO_CONTENT = 204
 HTTP_OK = 200
 
 
-def _reload_main_module():
-    return importlib.import_module("evnt.main")
-
-
-def _no_op_lifespan(_app):
-    @asynccontextmanager
-    async def _lifespan(_application):
-        yield
-
-    return _lifespan(_app)
-
-
-class _RecordingConnector:
-    """Fake RowSink that records the rows handed to ``insert_rows``."""
-
-    def __init__(self):
-        self.inserted_batches: list[list[dict]] = []
-
-    async def insert_rows(self, rows, table_group: str = "evnt") -> None:
-        self.inserted_batches.append(rows)
-
-    async def get_table_name(self, table_group: str = "evnt") -> str:
-        return "local"
-
-
 def _build_client(monkeypatch, app_root, connector):
     """Create a TestClient with a no-op lifespan and an overridden connector."""
-
-    monkeypatch.chdir(app_root)
-    main_module = _reload_main_module()
-    monkeypatch.setattr(main_module, "lifespan", _no_op_lifespan)
-
-    app = main_module.create_app()
+    app = build_app(monkeypatch, app_root)
     app.dependency_overrides[get_db_connector] = lambda: connector
     return TestClient(app)
 
 
-def _minimal_tp2_payload() -> dict:
-    """A minimal-but-valid Snowplow tp2 batch body (required fields only)."""
-
-    return {
-        "schema": ("iglu:com.snowplowanalytics.snowplow/payload_data/jsonschema/1-0-4"),
-        "data": [
-            {
-                "e": "pv",
-                "aid": "example-app",
-                "p": "web",
-                "tv": "js-3.0.0",
-                "res": "1920x1080",
-            },
-        ],
-    }
-
-
 def test_liveness_returns_204_without_initialized_backend(monkeypatch, app_root):
-    client = _build_client(monkeypatch, app_root, _RecordingConnector())
+    client = _build_client(monkeypatch, app_root, RecordingConnector())
 
     with client:
         response = client.get("/live")
@@ -87,11 +38,11 @@ def test_liveness_returns_204_without_initialized_backend(monkeypatch, app_root)
 
 
 def test_tracker_post_returns_204_and_forwards_rows(monkeypatch, app_root):
-    connector = _RecordingConnector()
+    connector = RecordingConnector()
     client = _build_client(monkeypatch, app_root, connector)
 
     with client:
-        response = client.post(POST_ENDPOINT, json=_minimal_tp2_payload())
+        response = client.post(POST_ENDPOINT, json=minimal_tp2_payload())
 
     assert response.status_code == HTTP_NO_CONTENT
     assert response.content == b""
@@ -104,7 +55,7 @@ def test_tracker_post_returns_204_and_forwards_rows(monkeypatch, app_root):
 
 
 def test_tracker_get_returns_gif_pixel_and_forwards_rows(monkeypatch, app_root):
-    connector = _RecordingConnector()
+    connector = RecordingConnector()
     client = _build_client(monkeypatch, app_root, connector)
 
     with client:
@@ -134,7 +85,7 @@ def test_tracker_get_returns_gif_pixel_and_forwards_rows(monkeypatch, app_root):
 
 
 def test_tracker_post_with_empty_batch_inserts_no_rows(monkeypatch, app_root):
-    connector = _RecordingConnector()
+    connector = RecordingConnector()
     client = _build_client(monkeypatch, app_root, connector)
 
     with client:
@@ -154,7 +105,7 @@ def test_tracker_post_with_empty_batch_inserts_no_rows(monkeypatch, app_root):
 
 
 def test_tracker_post_rejects_invalid_payload(monkeypatch, app_root):
-    connector = _RecordingConnector()
+    connector = RecordingConnector()
     client = _build_client(monkeypatch, app_root, connector)
 
     with client:

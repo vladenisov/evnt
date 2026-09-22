@@ -5,8 +5,11 @@ This module defines all configuration models using Pydantic for validation.
 Settings can be configured via environment variables with the EVNT_ prefix.
 """
 
+from __future__ import annotations
+
 import os
 import re
+from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
@@ -31,8 +34,13 @@ from .constants import (
     DEFAULT_CLICKHOUSE_USERNAME,
     DEFAULT_DATABASE_NAME,
     DEFAULT_DB_CONNECT_TIMEOUT,
+    DEFAULT_ENCRYPTED_ENDPOINT,
+    DEFAULT_ENCRYPTED_MAX_ENVELOPE_BYTES,
+    DEFAULT_ENCRYPTED_MAX_PLAINTEXT_BYTES,
+    DEFAULT_ENCRYPTED_MAX_QUERY_BYTES,
     DEFAULT_GET_ENDPOINT,
     DEFAULT_INGEST_MODE,
+    DEFAULT_MAX_REQUEST_BODY_BYTES,
     DEFAULT_METRICS_PATH,
     DEFAULT_POST_ENDPOINT,
     DEFAULT_PROXY_ENDPOINT,
@@ -51,6 +59,10 @@ from .constants import (
     ENV_DEVELOPMENT,
     ENV_PRODUCTION,
     LOG_LEVEL_WARNING,
+    MAX_ENCRYPTED_AMPLIFICATION,
+    MAX_ENCRYPTED_ENVELOPE_LIMIT,
+    MAX_ENCRYPTED_PLAINTEXT_LIMIT,
+    MAX_KEY_FILE_BYTES,
     SENTRY_ENV_DEV,
     SENTRY_ENV_PROD,
 )
@@ -128,6 +140,12 @@ class SecurityConfig(BaseModel):
     trust_proxy_headers: bool = True
     cors_allowed_origins: list[str] = ["*"]
     cors_allow_credentials: bool = True
+    # Applies to every endpoint. The encrypted endpoint layers its own, much
+    # tighter ceiling on top; this one only has to stop the pathological case.
+    max_request_body_bytes: int = Field(
+        default=DEFAULT_MAX_REQUEST_BODY_BYTES,
+        gt=0,
+    )
 
     @field_validator("cors_allowed_origins")
     @classmethod
@@ -194,6 +212,133 @@ class SentryConfig(BaseModel):
         if os.getenv("EVNT_ENV", ENV_DEVELOPMENT) == ENV_PRODUCTION
         else SENTRY_ENV_DEV
     )
+
+
+class EncryptionKeyConfig(BaseModel):
+    """One X25519 key pair the collector can decrypt with.
+
+    Exactly one of ``private_key`` / ``private_key_file`` must be set. The file
+    form exists so deployments can mount the key as a secret instead of baking
+    it into an environment variable, where it would be visible to anything that
+    can read the process environment.
+    """
+
+    kid: str = Field(
+        ...,
+        description=(
+            "Key id echoed in the envelope so clients can pick a key "
+            "without a coordinated flag day"
+        ),
+    )
+    private_key: SecretStr | None = Field(
+        default=None,
+        description="Raw 32-byte X25519 scalar as base64 or hex, or a PKCS#8 PEM",
+    )
+    private_key_file: str | None = Field(
+        default=None,
+        description="Path to a file holding the same material",
+    )
+    enabled: bool = True
+
+    @field_validator("kid")
+    @classmethod
+    def validate_kid(cls, value: str) -> str:
+        """Constrain the key id to what fits the envelope's cleartext field."""
+        from .crypto import validate_kid  # noqa: PLC0415 - avoids an import cycle
+
+        return validate_kid(value.strip())
+
+    @model_validator(mode="after")
+    def validate_source(self) -> EncryptionKeyConfig:
+        """Require exactly one source of key material."""
+        has_inline = self.private_key is not None
+        has_file = bool(self.private_key_file)
+        if has_inline == has_file:
+            raise ValueError(
+                f"encryption key {self.kid!r} must set exactly one of "
+                "private_key or private_key_file",
+            )
+        return self
+
+    def resolve_material(self) -> str | bytes:
+        """Return the raw key material, reading the file if one is configured."""
+        if self.private_key is not None:
+            return self.private_key.get_secret_value()
+        path = Path(self.private_key_file)  # type: ignore[arg-type]
+        try:
+            # A key file is at most a few hundred bytes. Checking first keeps a
+            # path that points at a huge file or a character device from hanging
+            # or exhausting memory during startup.
+            size = path.stat().st_size
+            if size > MAX_KEY_FILE_BYTES:
+                raise ValueError(
+                    f"encryption key {self.kid!r}: {path} is {size} bytes, "
+                    f"expected at most {MAX_KEY_FILE_BYTES}",
+                )
+            return path.read_bytes()
+        except OSError as exc:
+            raise ValueError(
+                f"encryption key {self.kid!r}: cannot read {path}: {exc}",
+            ) from exc
+
+
+class EncryptionConfig(BaseModel):
+    """Encrypted ingest endpoint configuration.
+
+    Off by default: the endpoint is only mounted when this is enabled, so a
+    deployment that does not use sealed payloads exposes no extra surface.
+    """
+
+    enabled: bool = False
+    # Lives here rather than in `common.snowplow.endpoints` with the plaintext
+    # paths because the path is meaningless without the keys and limits below,
+    # and the whole block is mounted or not as a unit.
+    endpoint: str = DEFAULT_ENCRYPTED_ENDPOINT
+    keys: list[EncryptionKeyConfig] = []
+    # These ceilings are what bound event-loop time per request, since unsealing
+    # runs inline. Capped rather than merely positive so raising them cannot
+    # silently turn one request into hundreds of megabytes of work.
+    max_envelope_bytes: int = Field(
+        default=DEFAULT_ENCRYPTED_MAX_ENVELOPE_BYTES,
+        gt=0,
+        le=MAX_ENCRYPTED_ENVELOPE_LIMIT,
+    )
+    max_plaintext_bytes: int = Field(
+        default=DEFAULT_ENCRYPTED_MAX_PLAINTEXT_BYTES,
+        gt=0,
+        le=MAX_ENCRYPTED_PLAINTEXT_LIMIT,
+    )
+    max_query_bytes: int = Field(
+        default=DEFAULT_ENCRYPTED_MAX_QUERY_BYTES,
+        gt=0,
+        le=MAX_ENCRYPTED_ENVELOPE_LIMIT,
+    )
+
+    @field_validator("endpoint")
+    @classmethod
+    def validate_endpoint(cls, value: str) -> str:
+        """Ensure the endpoint is a rooted path."""
+        path = value.strip()
+        if not path.startswith("/"):
+            raise ValueError("endpoint must start with '/'")
+        return path.rstrip("/") or "/"
+
+    @model_validator(mode="after")
+    def validate_amplification(self) -> EncryptionConfig:
+        """Keep the gzip flag from becoming a memory-amplification lever.
+
+        The ratio between the two ceilings is exactly how much memory one
+        small request can claim, so it is bounded explicitly rather than left
+        to whatever two independently-set numbers happen to imply.
+        """
+        ratio = self.max_plaintext_bytes / self.max_envelope_bytes
+        if ratio > MAX_ENCRYPTED_AMPLIFICATION:
+            raise ValueError(
+                f"max_plaintext_bytes / max_envelope_bytes is {ratio:.1f}, above "
+                f"the limit of {MAX_ENCRYPTED_AMPLIFICATION}; a compressed "
+                "payload could claim that multiple of the request size in memory",
+            )
+        return self
 
 
 class ProxyConfig(BaseModel):
@@ -419,6 +564,7 @@ class Settings(BaseSettings):
     common: CommonConfig = CommonConfig()
     clickhouse: ClickHouseConfig = ClickHouseConfig()
     ingest: IngestConfig = IngestConfig()
+    encryption: EncryptionConfig = EncryptionConfig()
 
     @property
     def is_production(self) -> bool:

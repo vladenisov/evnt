@@ -138,3 +138,8 @@ dmypy.json
 # Demo Vue SPA build artifacts
 evnt/routers/demo/web/node_modules/
 evnt/routers/demo/web/dist/
+
+# AI agents
+.claude/
+.serena/
+.omc/

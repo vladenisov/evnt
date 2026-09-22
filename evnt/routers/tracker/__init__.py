@@ -11,7 +11,14 @@ from fastapi.responses import Response
 from fastapi.routing import APIRouter
 from starlette.status import HTTP_204_NO_CONTENT
 
-from .routes import tracker_cors, tracker_get, tracker_post  # sendgrid_event
+from .routes import (
+    encrypted_cors,
+    encrypted_get,
+    encrypted_post,
+    tracker_cors,
+    tracker_get,
+    tracker_post,
+)
 
 # Get endpoint configuration from settings
 endpoints = settings.common.snowplow.endpoints
@@ -53,6 +60,53 @@ router.get(
         },
     },
 )(tracker_get)
+
+
+def build_encrypted_router() -> APIRouter:
+    """Build the router for the encrypted twin of the endpoints above.
+
+    A factory rather than module-level registration, because the endpoint is
+    opt-in: ``create_app`` decides whether to mount it, so a deployment that
+    does not seal payloads exposes no extra surface, and tests can build an app
+    either way without reimporting this module.
+
+    Both methods share one path since, unlike the plain endpoints, there is no
+    legacy Snowplow path contract to honour here.
+    """
+    encryption = settings.encryption
+    encrypted_router = APIRouter(tags=["tracker"])
+
+    encrypted_router.options(
+        encryption.endpoint,
+        include_in_schema=False,
+        status_code=HTTP_204_NO_CONTENT,
+    )(encrypted_cors)
+
+    encrypted_router.post(
+        encryption.endpoint,
+        summary="Encrypted Snowplow endpoint",
+        description=(
+            "Accepts a sealed Snowplow payload as raw bytes "
+            "(application/octet-stream) or base64 text."
+        ),
+        status_code=HTTP_204_NO_CONTENT,
+    )(encrypted_post)
+
+    encrypted_router.get(
+        encryption.endpoint,
+        summary="Encrypted Snowplow GET endpoint",
+        description="Pixel fallback carrying a base64url envelope in `d`.",
+        response_class=Response,
+        responses={
+            200: {
+                "content": {CONTENT_TYPE_GIF: {}},
+                "description": "1x1 transparent GIF tracking pixel",
+            },
+        },
+    )(encrypted_get)
+
+    return encrypted_router
+
 
 # Register the SendGrid webhook endpoint
 # Disabled: no "sendgrid" table group is registered in the ClickHouse schema

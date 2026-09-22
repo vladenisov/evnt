@@ -32,6 +32,10 @@ apm = ["elastic-apm>=6.23.0"]
 # EVNT_SENTRY__ENABLED=true; without it, enabling Sentry at startup
 # fails with a clear error.
 sentry = ["sentry-sdk[fastapi]>=2.35.1"]
+# Install with `uv sync --extra crypto`. Required when
+# EVNT_ENCRYPTION__ENABLED=true; without it, startup fails with a clear
+# error and the `/e` endpoint is never mounted.
+crypto = ["cryptography>=45.0.0"]
 
 
 [tool.ruff]
@@ -89,7 +93,9 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 # circular import with the schemas module that itself imports the connector.
 "evnt/routers/tracker/db/clickhouse/connector.py" = ["PLC0415"]
 # FastAPI endpoints idiomatically use `Depends(...)` in parameter defaults.
-"evnt/routers/tracker/routes/*.py" = ["B008"]
+# B008: FastAPI expresses dependencies as argument defaults.
+# PLR0913: handler signatures are dependency injection, not parameter lists.
+"evnt/routers/tracker/routes/*.py" = ["B008", "PLR0913"]
 # RabbitMQPublisher.__init__ takes six plain fields; splitting into a DTO
 # hurts more than the 5-arg limit helps.
 "evnt/ingest/rabbitmq.py" = ["PLR0913"]
@@ -137,4 +143,7 @@ root = [".", "./evnt"]
 dev = [
     "pre-commit>=4.2.0",
     "pytest>=8.3.5",
+    # Mirrors the `crypto` extra so `uv sync && pytest` collects the
+    # encrypted-ingest tests instead of erroring on a missing import.
+    "cryptography>=45.0.0",
 ]

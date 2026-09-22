@@ -15,6 +15,9 @@ uv run evnt/cli.py queue worker
 # Download tracker scripts (sp.js + plugins)
 uv run evnt/cli.py scripts download
 
+    # Generate an X25519 key pair for the encrypted /e endpoint
+    uv run evnt/cli.py keys generate --kid=k1
+
 The `db init` command replaces the previous automatic table creation that
 occurred during FastAPI lifespan startup.
 """
@@ -277,6 +280,66 @@ class DBCommands:
         return "ClickHouse initialization complete"
 
 
+class KeysCommands:
+    """Key management for the encrypted ingest endpoint."""
+
+    logger = structlog.get_logger("cli.keys")
+
+    def generate(self, kid: str = "k1") -> str:
+        """Generate an X25519 key pair for encrypted ingest.
+
+        The private half goes into the collector config; the public half is
+        embedded in the Android, iOS, and web clients.
+
+        Args:
+            kid: Key id clients will put in the envelope header
+        """
+        from core.crypto import generate_keypair, validate_kid  # noqa: PLC0415
+
+        kid = validate_kid(kid.strip())
+        private_b64, public_b64 = generate_keypair()
+
+        key_path = f"/run/secrets/evnt-{kid}.key"
+        file_form = orjson.dumps([{"kid": kid, "private_key_file": key_path}]).decode()
+        env_form = orjson.dumps([{"kid": kid, "private_key": private_b64}]).decode()
+
+        # The file form leads because an environment variable is readable via
+        # /proc/<pid>/environ, `docker inspect`, shell history, and CI logs --
+        # and a leaked private key retroactively decrypts every payload ever
+        # captured, since there is no forward secrecy on the recipient side.
+        return "\n".join([
+            f"kid:         {kid}",
+            f"public key:  {public_b64}   <- ship this to the clients",
+            f"private key: {private_b64}   <- keep on the collector only",
+            "",
+            "Collector config (preferred -- mount the key as a secret):",
+            f"  umask 077 && printf %s '{private_b64}' > {key_path}",
+            "  EVNT_ENCRYPTION__ENABLED=true",
+            f"  EVNT_ENCRYPTION__KEYS={file_form}",
+            "",
+            "Or inline, if you accept the key being readable in the process",
+            "environment, shell history, and CI logs:",
+            f"  EVNT_ENCRYPTION__KEYS={env_form}",
+        ])
+
+    def public(self, kid: str) -> str:
+        """Print the public key for a configured private key.
+
+        Args:
+            kid: Key id as configured in EVNT_ENCRYPTION__KEYS
+        """
+        import base64  # noqa: PLC0415
+
+        from core.crypto import Keyring  # noqa: PLC0415
+
+        keyring = Keyring.from_config(settings.encryption)
+        key_pair = keyring.get(kid)
+        if key_pair is None:
+            available = ", ".join(keyring.key_ids) or "none"
+            raise ValueError(f"unknown key id {kid!r}; configured: {available}")
+        return base64.b64encode(key_pair.public_key).decode()
+
+
 class CLI:
     """Root CLI object.
 
@@ -288,6 +351,7 @@ class CLI:
         self.db = DBCommands()
         self.queue = QueueCommands()
         self.scripts = ScriptsCommands()
+        self.keys = KeysCommands()
 
 
 class ScriptsCommands:

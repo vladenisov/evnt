@@ -36,6 +36,7 @@ PERFORMANCE_CONFIG = settings.performance
 CLICKHOUSE_CONFIG = settings.clickhouse
 INGEST_CONFIG = settings.ingest
 PROXY_CONFIG = settings.proxy
+ENCRYPTION_CONFIG = settings.encryption
 
 
 def _cache_health_checker(checker: HealthChecker) -> CachedHealthChecker:
@@ -203,6 +204,26 @@ async def _configure_proxy_http_client(
     application.state._closeables.append(application.state.proxy_http_client)
 
 
+def _configure_encryption(application: FastAPI) -> None:
+    """Resolve decryption keys once, before any traffic arrives.
+
+    Loading here rather than per-request means bad key material fails startup
+    loudly instead of degrading into a stream of opaque 400s in production.
+    """
+    if not ENCRYPTION_CONFIG.enabled:
+        application.state.keyring = None
+        return
+
+    from core.crypto import Keyring  # noqa: PLC0415 - optional `crypto` extra
+
+    application.state.keyring = Keyring.from_config(ENCRYPTION_CONFIG)
+    logger.info(
+        "Encrypted ingest enabled",
+        endpoint=ENCRYPTION_CONFIG.endpoint,
+        key_ids=list(application.state.keyring.key_ids),
+    )
+
+
 async def _close_lifespan_resources(application: FastAPI) -> None:
     """Close resources registered during application lifespan startup."""
 
@@ -267,6 +288,9 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
     )
 
     application.state._closeables = []
+    # Key material must resolve before the first request; do it outside the
+    # ingest try/except so a config error is not reported as a backend failure.
+    _configure_encryption(application)
     application.state.ingest_mode = INGEST_CONFIG.mode
 
     logger.info(

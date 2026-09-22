@@ -47,7 +47,43 @@ DEFAULT_POST_ENDPOINT: Final[str] = "/tracker"
 DEFAULT_GET_ENDPOINT: Final[str] = "/i"
 DEFAULT_PROXY_ENDPOINT: Final[str] = "/proxy"
 DEFAULT_SENDGRID_ENDPOINT: Final[str] = "/sendgrid"
+DEFAULT_ENCRYPTED_ENDPOINT: Final[str] = "/e"
 DEFAULT_METRICS_PATH: Final[str] = "/metrics/"
+
+# Encrypted ingest envelope (see core.crypto for the full wire format).
+# The magic doubles as a content sniff: a body that does not start with it is
+# treated as base64 text rather than raw bytes.
+ENVELOPE_MAGIC: Final[bytes] = b"EVN1"
+ENVELOPE_VERSION: Final[int] = 1
+ENVELOPE_FLAG_GZIP: Final[int] = 1 << 0
+ENVELOPE_MAX_KID_LEN: Final[int] = 32
+X25519_KEY_SIZE: Final[int] = 32
+AES_GCM_NONCE_SIZE: Final[int] = 12
+AES_GCM_TAG_SIZE: Final[int] = 16
+# Ceiling on a single sealed request body and on the plaintext it may inflate
+# to once gunzipped, so a compression bomb cannot exhaust memory. Sized for real
+# traffic with room to spare -- a 150-event mobile batch is ~27 KB and the JS
+# tracker caps POSTs at 40 KB -- because the ceiling is also what bounds the
+# event loop: unsealing at 1 MB measures ~0.7 ms, against ~0.04 ms for a typical
+# batch, so the work stays inline (see the no-offload policy in 5469947).
+DEFAULT_ENCRYPTED_MAX_ENVELOPE_BYTES: Final[int] = 256 * 1024
+DEFAULT_ENCRYPTED_MAX_PLAINTEXT_BYTES: Final[int] = 1024 * 1024
+# The GET fallback carries one event in a query string, which every proxy caps
+# near 8 KB anyway. Keeping this far below the POST ceiling also limits how much
+# attacker-chosen text a rejected request can write into the access log.
+DEFAULT_ENCRYPTED_MAX_QUERY_BYTES: Final[int] = 8 * 1024
+# Hard caps an operator cannot raise past, and the largest ratio between the
+# two: together they bound how much work and memory one request can claim.
+MAX_ENCRYPTED_ENVELOPE_LIMIT: Final[int] = 8 * 1024 * 1024
+MAX_ENCRYPTED_PLAINTEXT_LIMIT: Final[int] = 64 * 1024 * 1024
+MAX_ENCRYPTED_AMPLIFICATION: Final[int] = 16
+# A key file holds a PEM or a base64 scalar; anything larger is a wrong path.
+MAX_KEY_FILE_BYTES: Final[int] = 64 * 1024
+
+# Ceiling on any request body. Generous enough that no real tracker batch
+# comes close, while keeping one caller from making a worker buffer and
+# parse an unbounded payload.
+DEFAULT_MAX_REQUEST_BODY_BYTES: Final[int] = 10 * 1024 * 1024
 
 # ClickHouse defaults
 DEFAULT_CLICKHOUSE_HOST: Final[str] = "clickhouse"
