@@ -66,6 +66,15 @@ COPY ./evnt /app/evnt
 COPY --from=web-builder /web/dist /app/evnt/routers/demo/web/dist
 COPY LICENSE THIRD_PARTY_NOTICES.md /app/
 
+# The Iglu schemas come in through the `evnt/vendor/iglu-central` submodule, and
+# a payload whose schema is missing from disk validates as `skipped` instead of
+# failing. A checkout that quietly missed the submodule would therefore produce
+# a green image with schema validation switched off, so refuse to build one.
+RUN test -n "$(ls -A vendor/iglu-central/schemas 2>/dev/null)" || { \
+        echo "vendor/iglu-central/schemas is empty: submodule not checked out" >&2; \
+        exit 1; \
+    }
+
 RUN --mount=type=cache,id=root-cache-${TARGETOS}-${TARGETARCH}${TARGETVARIANT},sharing=locked,target=/root/.cache \
     uv run cli.py scripts download --version 4.10.2 --output_dir static/sp --force
 
