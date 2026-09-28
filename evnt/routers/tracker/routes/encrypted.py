@@ -10,13 +10,16 @@ mobile trackers -- so nothing about the event model changes.
 See ``core.crypto`` for the envelope format and the key schedule.
 """
 
+import base64
+from functools import lru_cache
 from ipaddress import IPv4Address, IPv6Address
+from pathlib import Path
 from typing import Final
 
 import orjson
 import structlog
 from core.config import settings
-from core.constants import CONTENT_TYPE_GIF, TRACKING_PIXEL
+from core.constants import CONTENT_TYPE_GIF, CONTENT_TYPE_JAVASCRIPT, TRACKING_PIXEL
 from core.crypto import DecryptionError, Keyring, coerce_envelope_bytes, open_envelope
 from core.dependencies import DbConnector
 from core.tracing import async_capture_span
@@ -38,6 +41,15 @@ logger = structlog.get_logger(__name__)
 # envelope must not learn whether it got the key id, the tag, or the JSON
 # wrong, since that turns the endpoint into an oracle.
 _REJECTION_DETAIL: Final[str] = "invalid encrypted payload"
+
+# The browser sealer, served with its key material substituted in.
+_SEAL_SCRIPT_PATH: Final[Path] = (
+    Path(__file__).resolve().parents[1] / "static" / "seal.js"
+)
+_SEAL_CONFIG_TOKEN: Final[str] = "__EVNT_CONFIG__"
+# Long enough that the script is not refetched on every page view, short enough
+# that a key rotation reaches browsers within the hour without a purge.
+_SEAL_SCRIPT_MAX_AGE: Final[int] = 900
 
 
 def get_keyring(request: Request) -> Keyring:
@@ -118,10 +130,61 @@ def _unseal(keyring: Keyring, raw: bytes) -> PayloadModel:
         ) from exc
 
 
+@lru_cache(maxsize=4)
+def _render_seal_script(public_key_b64: str, kid: str, endpoint: str) -> bytes:
+    """
+    Substitute key material into the browser sealer.
+
+    Cached on what it interpolates rather than read per request: the keyring
+    only changes on restart, so a page view should not cost a file read plus a
+    template pass.
+    """
+    config = orjson.dumps(
+        {
+            "publicKey": public_key_b64,
+            "kid": kid,
+            "endpoint": endpoint,
+            "compress": True,
+        },
+    ).decode()
+    template = _SEAL_SCRIPT_PATH.read_text(encoding="utf-8")
+    return template.replace(_SEAL_CONFIG_TOKEN, config).encode()
+
+
 @async_capture_span()
 async def encrypted_cors() -> None:
     """Handle CORS preflight requests for the encrypted endpoint."""
     return
+
+
+@async_capture_span()
+async def encrypted_script(keyring: Keyring = Depends(get_keyring)) -> Response:
+    """
+    Serve the browser sealer with this collector's public key baked in.
+
+    Handing the key out from the keyring rather than from a build artifact is
+    what keeps key material out of tag manager containers and app bundles, and
+    makes rotation a collector config change: browsers pick the new key up as
+    their cached copy expires, while the old one keeps opening envelopes that
+    are still in flight.
+
+    Args:
+        keyring: Decryption keys resolved at startup (injected)
+
+    Returns:
+        The sealer as JavaScript, cacheable for a few minutes
+    """
+    key_pair = keyring.primary
+    body = _render_seal_script(
+        base64.b64encode(key_pair.public_key).decode(),
+        key_pair.kid,
+        settings.encryption.endpoint,
+    )
+    return Response(
+        content=body,
+        media_type=CONTENT_TYPE_JAVASCRIPT,
+        headers={"Cache-Control": f"public, max-age={_SEAL_SCRIPT_MAX_AGE}"},
+    )
 
 
 @async_capture_span()

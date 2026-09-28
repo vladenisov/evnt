@@ -67,7 +67,7 @@ COPY --from=web-builder /web/dist /app/evnt/routers/demo/web/dist
 COPY LICENSE THIRD_PARTY_NOTICES.md /app/
 
 RUN --mount=type=cache,id=root-cache-${TARGETOS}-${TARGETARCH}${TARGETVARIANT},sharing=locked,target=/root/.cache \
-    uv run cli.py scripts download --version 4.6.9 --output_dir static --force
+    uv run cli.py scripts download --version 4.10.2 --output_dir static/sp --force
 
 # Use tini as init to properly handle signals
 ENTRYPOINT ["/sbin/tini", "--"]

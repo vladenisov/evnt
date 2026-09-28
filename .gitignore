@@ -132,8 +132,9 @@ dmypy.json
 # Ignore dynaconf secret files
 .secrets.*
 
-# Downloaded Snowplow tracker scripts (fetched by `uv run evnt/cli.py scripts download`)
-/evnt/static/
+# Downloaded Snowplow tracker scripts (fetched by `uv run evnt/cli.py scripts download`).
+# Only the vendored subtree is ignored; `evnt/static/` itself holds our own assets.
+/evnt/static/sp/
 
 # Demo Vue SPA build artifacts
 evnt/routers/demo/web/node_modules/

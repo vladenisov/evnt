@@ -114,9 +114,9 @@ def _configure_routers(app: FastAPI) -> None:
     # keeps it off the surface of deployments that do not use it.
     if settings.encryption.enabled:
         app.include_router(build_encrypted_router())
-    # check_dir=False so the app boots even when the static assets have not been
-    # downloaded yet (they are fetched at container build time, and the dir is
-    # gitignored). Requests to /static/* simply 404 until the dir is populated.
+    # check_dir=False so the app boots even when the vendored tracker has not
+    # been downloaded yet (it is fetched at container build time into the
+    # gitignored `static/sp/`). Requests to /static/* simply 404 until then.
     app.mount(
         "/static",
         StaticFiles(directory="static", check_dir=False),

@@ -6,7 +6,7 @@ and services using the Snowplow tracking protocol.
 """
 
 from core.config import settings
-from core.constants import CONTENT_TYPE_GIF
+from core.constants import CONTENT_TYPE_GIF, CONTENT_TYPE_JAVASCRIPT
 from fastapi.responses import Response
 from fastapi.routing import APIRouter
 from starlette.status import HTTP_204_NO_CONTENT
@@ -15,6 +15,7 @@ from .routes import (
     encrypted_cors,
     encrypted_get,
     encrypted_post,
+    encrypted_script,
     tracker_cors,
     tracker_get,
     tracker_post,
@@ -104,6 +105,25 @@ def build_encrypted_router() -> APIRouter:
             },
         },
     )(encrypted_get)
+
+    # Served from the endpoint path plus `.js` so the browser resolves the
+    # collector origin from the script's own URL, with no second host to
+    # configure and no key material in the page.
+    encrypted_router.get(
+        f"{encryption.endpoint}.js",
+        summary="Browser sealer for the encrypted endpoint",
+        description=(
+            "JavaScript that seals Snowplow batches, served with this "
+            "collector's public key and key id substituted in."
+        ),
+        response_class=Response,
+        responses={
+            200: {
+                "content": {CONTENT_TYPE_JAVASCRIPT: {}},
+                "description": "The browser sealing module",
+            },
+        },
+    )(encrypted_script)
 
     return encrypted_router
 

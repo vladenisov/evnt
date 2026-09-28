@@ -30,8 +30,8 @@ http://www.apache.org/licenses/LICENSE-2.0
 - Copyright © 2022 Snowplow Analytics Ltd, © 2010 Anthon Pang
 - How it is used: downloaded **unmodified** from the official GitHub Releases
   by `evnt/cli.py scripts download` and served from
-  `evnt/static/`. The tracker bundle is **not committed** to this
-  repository (`/evnt/static/` is gitignored).
+  `evnt/static/sp/`. The tracker bundle is **not committed** to this
+  repository (`/evnt/static/sp/` is gitignored).
 
 ## Snowplow Browser Plugins
 
@@ -41,10 +41,10 @@ http://www.apache.org/licenses/LICENSE-2.0
 - Copyright © 2022 Snowplow Analytics Ltd, © 2010 Anthon Pang
 - How it is used: downloaded **unmodified** from the official GitHub Releases
   by `evnt/cli.py scripts download` and served from
-  `evnt/static/plugins/`. Bundles are **not committed** to this
+  `evnt/static/sp/plugins/`. Bundles are **not committed** to this
   repository.
 
-The following plugin bundles may be served from this project's `static/plugins/`
+The following plugin bundles may be served from this project's `static/sp/plugins/`
 directory after running the download CLI; each retains the BSD-3-Clause notice
 in its own bundle header:
 

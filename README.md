@@ -60,7 +60,9 @@ If you want to host the official Snowplow JS bundle from your own domain, run:
 uv run python evnt/cli.py scripts download
 ```
 
-That places `sp.js` (and plugins) into `evnt/static/`, served at `/static/sp.js`.
+That places `sp.js` (and plugins) into `evnt/static/sp/`, served at
+`/static/sp/sp.js`. The vendored subtree is gitignored and regenerated on every
+image build; `evnt/static/` itself is for assets this project owns.
 
 ## Configuration
 

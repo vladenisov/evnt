@@ -24,6 +24,7 @@ TRACKING_PIXEL: Final[bytes] = base64.b64decode(
 CONTENT_TYPE_GIF: Final[str] = "image/gif"
 CONTENT_TYPE_JSON: Final[str] = "application/json"
 CONTENT_TYPE_OCTET_STREAM: Final[str] = "application/octet-stream"
+CONTENT_TYPE_JAVASCRIPT: Final[str] = "text/javascript; charset=utf-8"
 
 # Timeouts (in seconds)
 DEFAULT_PROXY_TIMEOUT: Final[float] = 10.0

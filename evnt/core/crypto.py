@@ -316,6 +316,23 @@ class Keyring:
     def key_ids(self) -> tuple[str, ...]:
         return tuple(self._keys)
 
+    @property
+    def primary(self) -> KeyPair:
+        """
+        The key new clients should seal to.
+
+        Config order is what makes rotation work without a flag day: put the
+        new key first and clients adopt it as their cached copy of the browser
+        sealer expires, while the old key stays live for everything already in
+        flight or baked into a shipped app build.
+        """
+        try:
+            return next(iter(self._keys.values()))
+        except StopIteration:
+            # `from_config` refuses to build an empty keyring, so this is only
+            # reachable from a hand-assembled one in a test.
+            raise EncryptionConfigError("keyring holds no keys") from None
+
     def get(self, kid: str) -> KeyPair | None:
         return self._keys.get(kid)
 

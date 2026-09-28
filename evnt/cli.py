@@ -361,8 +361,8 @@ class ScriptsCommands:
 
     def download(
         self,
-        version: str = "4.6.6",
-        output_dir: str = "static",
+        version: str = "4.10.2",
+        output_dir: str = "static/sp",
         force: bool = False,
         create_loader_copy: bool = True,
     ) -> str:
