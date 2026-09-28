@@ -133,7 +133,7 @@ def client(monkeypatch, app_root, keys, connector) -> TestClient:
 
 
 def _run_node(
-    tmp_path, harness: str, script: str, *args: str, env: dict | None = None
+    tmp_path, harness: str, script: str, *args: str, env: dict | None = None,
 ) -> dict:
     """Run one of the Node harnesses against the served script."""
     script_path = tmp_path / "seal.js"
@@ -211,7 +211,7 @@ class TestNodeInterop:
 
         with client:
             sealed = _seal_with_node(
-                tmp_path, client.get(SCRIPT_ENDPOINT).text, payload
+                tmp_path, client.get(SCRIPT_ENDPOINT).text, payload,
             )
             response = client.post(
                 ENDPOINT,

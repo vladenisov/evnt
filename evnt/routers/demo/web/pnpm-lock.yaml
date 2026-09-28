@@ -993,7 +993,7 @@ snapshots:
     optionalDependencies:
       typescript: 5.7.3
     transitivePeerDependencies:
-      - '@vue/composition-api'
+    - '@vue/composition-api'
 
   postcss@8.5.12:
     dependencies:
