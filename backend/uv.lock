@@ -533,7 +533,7 @@ requires-dist = [
     { name = "aio-pika", specifier = ">=9.5.7" },
     { name = "asgi-correlation-id", specifier = ">=4.3.4" },
     { name = "brotli-asgi", specifier = ">=1.4.0" },
-    { name = "clickhouse-connect", extras = ["async"], specifier = ">=0.8.17" },
+    { name = "clickhouse-connect", specifier = ">=0.8.17" },
     { name = "crawlerdetect", specifier = ">=0.3.0" },
     { name = "cryptography", marker = "extra == 'crypto'", specifier = ">=45.0.0" },
     { name = "elastic-apm", marker = "extra == 'apm'", specifier = ">=6.23.0" },

@@ -55,8 +55,7 @@ async def test_create_client_sizes_the_connection_pool(monkeypatch):
 
     await clickhouse.create_client(config, pool_size=7)
 
-    assert seen["connector_limit"] == 7
-    assert seen["connector_limit_per_host"] == 7
+    assert seen["pool_mgr"].connection_pool_kw["maxsize"] == 7
     assert seen["query_limit"] == 0
     assert seen["host"] == config.connection.host
     # The secret is unwrapped for the driver, never passed as a SecretStr.

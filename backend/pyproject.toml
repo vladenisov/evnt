@@ -9,7 +9,7 @@ dependencies = [
     "aio-pika>=9.5.7",
     "asgi-correlation-id>=4.3.4",
     "brotli-asgi>=1.4.0",
-    "clickhouse-connect[async]>=0.8.17",
+    "clickhouse-connect>=0.8.17",
     "crawlerdetect>=0.3.0",
     "fastapi>=0.138.0",
     "fastapi-structlog>=0.7.1",
@@ -91,6 +91,11 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["src/evnt/tests"]
 addopts = ["--import-mode=importlib"]
+markers = [
+    # src/evnt/tests/integration: a real ClickHouse (and RabbitMQ). They SKIP
+    # when unreachable; CI sets EVNT_IT_REQUIRED=1 so a skip fails the job.
+    "integration: runs against real ClickHouse/RabbitMQ (EVNT_IT_* env vars)",
+]
 filterwarnings = [
     # clickhouse_connect's Cython buffer module uses `array.array('u', ...)`,
     # deprecated since Python 3.13. Emitted during import, so it cannot be

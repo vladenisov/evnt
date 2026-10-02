@@ -68,13 +68,6 @@ def test_tracker_get_returns_gif_pixel_and_forwards_rows(monkeypatch):
                 "p": "web",
                 "tv": "js-3.0.0",
                 "res": "1920x1080",
-                # The GET endpoint binds PayloadElementModel via Depends(), and
-                # FastAPI surfaces fields with a default_factory (eid/dtm/stm/rtm)
-                # as required query params, so they must be supplied explicitly.
-                "eid": "00000000-0000-0000-0000-000000000000",
-                "dtm": "2024-01-01T00:00:00Z",
-                "stm": "2024-01-01T00:00:00Z",
-                "rtm": "2024-01-01T00:00:00Z",
             },
         )
 
@@ -83,6 +76,25 @@ def test_tracker_get_returns_gif_pixel_and_forwards_rows(monkeypatch):
     assert response.content == TRACKING_PIXEL
     assert len(connector.inserted_batches) == 1
     assert connector.inserted_batches[0][0]["aid"] == "example-app"
+
+
+def test_tracker_get_fills_defaults_for_fields_trackers_do_not_send(monkeypatch):
+    """Regression: binding the model with ``Depends()`` turned every
+    ``default_factory`` field (eid/dtm/stm/rtm) into a required query param,
+    so real pixels, which never carry ``rtm``, were rejected with 422."""
+    connector = RecordingConnector()
+    client = _build_client(monkeypatch, connector)
+
+    with client:
+        response = client.get(
+            GET_ENDPOINT,
+            params={"e": "pv", "aid": "example-app", "p": "web", "tv": "js-3.0.0", "res": "1x1"},
+        )
+
+    assert response.status_code == HTTP_OK
+    row = connector.inserted_batches[0][0]
+    assert row["eid"] is not None
+    assert row["rtm"] is not None
 
 
 def test_tracker_post_with_empty_batch_inserts_no_rows(monkeypatch):

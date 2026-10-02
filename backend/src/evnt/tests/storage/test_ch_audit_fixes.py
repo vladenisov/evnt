@@ -27,6 +27,7 @@ class _RecordingConnector:
 
     def __init__(self, tables: dict) -> None:
         self.tables = tables
+        self.database = "evnt"
         self.cluster_condition = ""
         self.cluster = None
         self.commands: list[str] = []

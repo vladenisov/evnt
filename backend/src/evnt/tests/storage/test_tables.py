@@ -87,7 +87,7 @@ async def test_create_database_without_cluster_has_no_on_cluster_clause(anyio_ba
 
 @pytest.mark.anyio
 async def test_create_database_collects_qualified_table_dbs_and_dedups(anyio_backend):
-    """Group key + every ``db.table`` qualified name produce one CREATE each."""
+    """The configured database + every ``db.table`` qualifier, one CREATE each."""
 
     connector = _FakeConnector(
         cluster=None,
@@ -105,9 +105,24 @@ async def test_create_database_collects_qualified_table_dbs_and_dedups(anyio_bac
     await manager.create_database()
 
     created_dbs = sorted(cmd.split("IF NOT EXISTS ")[1].split(" ")[0] for cmd in connector.commands)
-    # "evnt" (group key) and "analytics" (from the qualified table names), deduped.
+    # "evnt" (connector database) and "analytics" (qualified names), deduped.
     assert created_dbs == ["analytics", "evnt"]
     assert len(connector.commands) == 2
+
+
+@pytest.mark.anyio
+async def test_create_database_uses_the_configured_database_not_the_group_key(anyio_backend):
+    """Regression: the group key ("evnt") was created instead of the database,
+    so ``db init`` failed whenever ``configuration.database`` was not "evnt"."""
+
+    connector = _FakeConnector(
+        database="custom_db",
+        tables={"evnt": {"local": {"name": "local"}}},
+    )
+
+    await TableManager(connector).create_database()
+
+    assert connector.commands == ["CREATE DATABASE IF NOT EXISTS custom_db "]
 
 
 @pytest.mark.anyio

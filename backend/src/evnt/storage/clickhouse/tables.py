@@ -28,12 +28,13 @@ class TableManager:
         """
         Create databases for all tables.
         """
-        databases: set[str] = set()
+        # Group keys name table groups, not databases: tables live in the
+        # configured database unless a table name is explicitly qualified.
+        databases: set[str] = {self.connector.database}
 
-        for group, tables in self.connector.tables.items():
+        for tables in self.connector.tables.values():
             if not isinstance(tables, dict):
                 continue
-            databases.add(group)
             for table_info in tables.values():
                 if not isinstance(table_info, dict):
                     continue

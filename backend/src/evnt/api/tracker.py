@@ -8,7 +8,7 @@ answers with a tracking pixel.
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, Response
+from fastapi import APIRouter, Header, Query, Response
 from starlette.status import HTTP_204_NO_CONTENT
 
 from evnt.api.deps import ClientIP, DbConnector
@@ -44,7 +44,7 @@ async def tracker_post(
 @async_capture_span()
 async def tracker_get(
     connector: DbConnector,
-    params: Annotated[PayloadElementModel, Depends()],
+    params: Annotated[PayloadElementModel, Query()],
     user_ip: ClientIP,
     user_agent: UserAgent = None,
     cookie: Cookie = None,
