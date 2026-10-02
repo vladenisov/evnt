@@ -83,6 +83,12 @@ textarea:focus {
   box-shadow: 0 0 0 3px var(--c-accent-soft);
 }
 
+button:focus-visible,
+.btn:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+}
+
 .btn {
   display: inline-flex;
   align-items: center;

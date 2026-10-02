@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { computed, ref, watch } from "vue";
 
 const STORAGE_KEY = "evnt-demo:settings:v1";
+const PASSWORD_KEY = "evnt-demo:settings:pwd:v1";
 
 export interface ClickHouseSettings {
   url: string;
@@ -13,19 +14,28 @@ export interface ClickHouseSettings {
 const DEFAULTS: ClickHouseSettings = {
   url: "http://localhost:8123",
   user: "default",
-  password: "password",
+  password: "",
   database: "evnt",
 };
 
 function loadFromStorage(): ClickHouseSettings {
+  let restored: ClickHouseSettings = { ...DEFAULTS };
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { ...DEFAULTS };
-    const parsed = JSON.parse(raw) as Partial<ClickHouseSettings>;
-    return { ...DEFAULTS, ...parsed };
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<ClickHouseSettings>;
+      restored = { ...DEFAULTS, ...parsed };
+    }
   } catch {
-    return { ...DEFAULTS };
+    restored = { ...DEFAULTS };
   }
+  // Password is never persisted to localStorage; restore it from sessionStorage.
+  try {
+    restored.password = sessionStorage.getItem(PASSWORD_KEY) ?? "";
+  } catch {
+    restored.password = "";
+  }
+  return restored;
 }
 
 export const useSettings = defineStore("settings", () => {
@@ -42,17 +52,19 @@ export const useSettings = defineStore("settings", () => {
     database: database.value,
   }));
 
-  watch(
-    snapshot,
-    (next) => {
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-      } catch {
-        /* ignore quota / private mode */
-      }
-    },
-    { deep: true },
-  );
+  watch(snapshot, (next) => {
+    const { password: nextPassword, ...persisted } = next;
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));
+    } catch {
+      /* ignore quota / private mode */
+    }
+    try {
+      sessionStorage.setItem(PASSWORD_KEY, nextPassword);
+    } catch {
+      /* ignore quota / private mode */
+    }
+  });
 
   function reset() {
     url.value = DEFAULTS.url;

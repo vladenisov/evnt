@@ -75,12 +75,8 @@ async function load() {
   error.value = null;
   try {
     const [database, table] = props.qualified.split(".");
-    if (columnsInfo.value.length === 0 || columnsInfo.value[0]?.name === "") {
+    if (columnsInfo.value.length === 0) {
       columnsInfo.value = await describeTable(database, table);
-    } else {
-      // refresh schema if table changed
-      const fresh = await describeTable(database, table);
-      columnsInfo.value = fresh;
     }
 
     const sort = sorting.value[0];
@@ -120,7 +116,7 @@ watch(
 );
 
 watch(
-  [sorting, pagination, () => settings.snapshot],
+  [sorting, pagination, settings.snapshot],
   () => {
     void load();
   },
@@ -214,13 +210,26 @@ defineExpose({ reload });
                 (header.column.columnDef.meta as { type?: string } | undefined)
                   ?.type
               "
+              :tabindex="header.column.getCanSort() ? 0 : undefined"
+              :aria-sort="
+                header.column.getCanSort()
+                  ? header.column.getIsSorted() === 'asc'
+                    ? 'ascending'
+                    : header.column.getIsSorted() === 'desc'
+                      ? 'descending'
+                      : 'none'
+                  : undefined
+              "
               @click="header.column.getToggleSortingHandler()?.($event)"
+              @keydown.enter.space.prevent="
+                header.column.getToggleSortingHandler()?.($event)
+              "
             >
               <FlexRender
                 :render="header.column.columnDef.header"
                 :props="header.getContext()"
               />
-              <span class="sort-indicator">
+              <span class="sort-indicator" aria-hidden="true">
                 {{
                   header.column.getIsSorted() === "asc"
                     ? "▲"
@@ -250,8 +259,9 @@ defineExpose({ reload });
 
     <div class="footer">
       <div class="page-size">
-        <label class="muted">Rows per page</label>
+        <label class="muted" for="page-size">Rows per page</label>
         <select
+          id="page-size"
           :value="pagination.pageSize"
           @change="
             setPageSize(Number(($event.target as HTMLSelectElement).value))

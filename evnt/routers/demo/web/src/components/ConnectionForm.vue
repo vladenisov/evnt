@@ -28,20 +28,25 @@ async function testConnection() {
 <template>
   <form class="form surface" @submit.prevent="testConnection">
     <div class="row">
-      <label>HTTP URL</label>
-      <input v-model="url" type="text" autocomplete="off" />
+      <label for="ch-url">HTTP URL</label>
+      <input id="ch-url" v-model="url" type="text" autocomplete="off" />
     </div>
     <div class="row">
-      <label>User</label>
-      <input v-model="user" type="text" autocomplete="off" />
+      <label for="ch-user">User</label>
+      <input id="ch-user" v-model="user" type="text" autocomplete="off" />
     </div>
     <div class="row">
-      <label>Password</label>
-      <input v-model="password" type="password" autocomplete="off" />
+      <label for="ch-password">Password</label>
+      <input
+        id="ch-password"
+        v-model="password"
+        type="password"
+        autocomplete="off"
+      />
     </div>
     <div class="row">
-      <label>Database</label>
-      <input v-model="database" type="text" autocomplete="off" />
+      <label for="ch-database">Database</label>
+      <input id="ch-database" v-model="database" type="text" autocomplete="off" />
     </div>
 
     <div class="actions">
@@ -50,8 +55,10 @@ async function testConnection() {
         Reset to defaults
       </button>
       <span
-        v-if="ping !== 'idle'"
+        v-show="ping !== 'idle'"
         class="status"
+        aria-live="polite"
+        aria-atomic="true"
         :class="{
           ok: ping === 'ok',
           fail: ping === 'fail',
