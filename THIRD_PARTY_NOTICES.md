@@ -16,9 +16,9 @@ are reproduced or fetched **unmodified**.
 - License: Apache License, Version 2.0
 - Copyright © 2014-present Snowplow Analytics Ltd.
 - How it is used: included as a git submodule at
-  `evnt/vendor/iglu-central`. Schemas are read at runtime for event
+  `backend/vendor/iglu-central`. Schemas are read at runtime for event
   validation. They are **not modified**.
-- License text: `evnt/vendor/iglu-central/LICENSE`
+- License text: `backend/vendor/iglu-central/LICENSE`
 
 A copy of the Apache 2.0 license text is available at
 http://www.apache.org/licenses/LICENSE-2.0
@@ -29,9 +29,9 @@ http://www.apache.org/licenses/LICENSE-2.0
 - License: BSD 3-Clause
 - Copyright © 2022 Snowplow Analytics Ltd, © 2010 Anthon Pang
 - How it is used: downloaded **unmodified** from the official GitHub Releases
-  by `evnt/cli.py scripts download` and served from
-  `evnt/static/sp/`. The tracker bundle is **not committed** to this
-  repository (`/evnt/static/sp/` is gitignored).
+  by `evnt scripts download` (at image build time) and served from
+  `/static/sp/`. The tracker bundle is **not committed** to this
+  repository (`backend/static/sp/` is gitignored).
 
 ## Snowplow Browser Plugins
 
@@ -40,8 +40,8 @@ http://www.apache.org/licenses/LICENSE-2.0
 - License: BSD 3-Clause
 - Copyright © 2022 Snowplow Analytics Ltd, © 2010 Anthon Pang
 - How it is used: downloaded **unmodified** from the official GitHub Releases
-  by `evnt/cli.py scripts download` and served from
-  `evnt/static/sp/plugins/`. Bundles are **not committed** to this
+  by `evnt scripts download` (at image build time) and served from
+  `/static/sp/plugins/`. Bundles are **not committed** to this
   repository.
 
 The following plugin bundles may be served from this project's `static/sp/plugins/`

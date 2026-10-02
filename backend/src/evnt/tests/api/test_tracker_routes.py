@@ -6,7 +6,7 @@ real ClickHouse/RabbitMQ backend. The app is built via ``create_app()`` with
 the production lifespan patched out (the ``_no_op_lifespan`` pattern), and the
 ``DbConnector`` dependency is overridden with a fake row sink so the only thing
 under test here is the HTTP/status/response-model contract -- payload parsing
-itself is covered by the unit tests under ``tests/routers/tracker/parsers/``.
+itself is covered by the unit tests under ``tests/tracker/``.
 """
 
 from fastapi.testclient import TestClient

@@ -3,7 +3,7 @@
  *
  * Served by the collector at `<encryption endpoint>.js` with the recipient key
  * and key id already substituted, so no key material has to live in a tag
- * manager container or an application bundle. See `evnt/core/crypto.py` for the
+ * manager container or an application bundle. See `backend/src/evnt/crypto.py` for the
  * wire format this file has to match byte for byte.
  *
  * Usage:
