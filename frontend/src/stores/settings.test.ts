@@ -24,7 +24,7 @@ describe("settings store", () => {
 
   it("ignores a password that an old build left in localStorage", () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ password: "leaked" }));
-    expect(useSettings().password).toBe("");
+    expect(useSettings().password).toBe(DEFAULTS.password);
   });
 
   it.each([
@@ -84,6 +84,6 @@ describe("settings store", () => {
     s.reset();
     expect(s.snapshot).toEqual(DEFAULTS);
     await nextTick();
-    expect(sessionStorage.getItem(PASSWORD_KEY)).toBe("");
+    expect(sessionStorage.getItem(PASSWORD_KEY)).toBe(DEFAULTS.password);
   });
 });

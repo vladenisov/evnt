@@ -27,8 +27,11 @@ docker compose up -d clickhouse
 # 2. One-time: create the `evnt` database and tables (idempotent).
 docker compose run --rm app evnt db init
 
-# 3. Start the collector (add `--profile rabbitmq` for RabbitMQ mode).
+# 3. Start the collector.
 docker compose up -d
+#    Or with the RabbitMQ buffer: the profile only adds the services,
+#    the ingest mode has to be switched as well.
+# EVNT_INGEST__MODE=rabbitmq docker compose --profile rabbitmq up -d
 ```
 
 For development (watch mode, tests, linters) see [CONTRIBUTING.md](CONTRIBUTING.md);

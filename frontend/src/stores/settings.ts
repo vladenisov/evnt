@@ -14,7 +14,8 @@ export interface ClickHouseSettings {
 export const DEFAULTS: Readonly<ClickHouseSettings> = Object.freeze({
   url: "http://localhost:8123",
   user: "default",
-  password: "",
+  // Matches CLICKHOUSE_PASSWORD in compose.yml, so the quickstart works as is.
+  password: "password",
   database: "evnt",
 });
 
@@ -47,9 +48,9 @@ function readPersisted(): Persisted {
 // The password is kept for this tab only (sessionStorage), never in localStorage.
 function readPassword(): string {
   try {
-    return sessionStorage.getItem(PASSWORD_KEY) ?? "";
+    return sessionStorage.getItem(PASSWORD_KEY) ?? DEFAULTS.password;
   } catch {
-    return "";
+    return DEFAULTS.password;
   }
 }
 
