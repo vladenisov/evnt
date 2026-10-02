@@ -1,0 +1,585 @@
+"""
+Configuration management for evnt.
+
+This module defines all configuration models using Pydantic for validation.
+Settings can be configured via environment variables with the EVNT_ prefix.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from pathlib import Path
+from typing import Any, Literal
+from urllib.parse import urlsplit
+
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from evnt.constants import (
+    APP_SLUG,
+    DEFAULT_CLICKHOUSE_DATABASE,
+    DEFAULT_CLICKHOUSE_HOST,
+    DEFAULT_CLICKHOUSE_INTERFACE,
+    DEFAULT_CLICKHOUSE_PORT,
+    DEFAULT_CLICKHOUSE_STARTUP_RETRY_INTERVAL_MS,
+    DEFAULT_CLICKHOUSE_STARTUP_TIMEOUT_SECONDS,
+    DEFAULT_CLICKHOUSE_USERNAME,
+    DEFAULT_DATABASE_NAME,
+    DEFAULT_DB_CONNECT_TIMEOUT,
+    DEFAULT_ENCRYPTED_ENDPOINT,
+    DEFAULT_ENCRYPTED_MAX_ENVELOPE_BYTES,
+    DEFAULT_ENCRYPTED_MAX_PLAINTEXT_BYTES,
+    DEFAULT_ENCRYPTED_MAX_QUERY_BYTES,
+    DEFAULT_GET_ENDPOINT,
+    DEFAULT_INGEST_MODE,
+    DEFAULT_MAX_REQUEST_BODY_BYTES,
+    DEFAULT_METRICS_PATH,
+    DEFAULT_POST_ENDPOINT,
+    DEFAULT_PROXY_ENDPOINT,
+    DEFAULT_RABBITMQ_BATCH_SIZE,
+    DEFAULT_RABBITMQ_BATCH_TIMEOUT_MS,
+    DEFAULT_RABBITMQ_CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_RABBITMQ_HOST,
+    DEFAULT_RABBITMQ_INSERT_TIMEOUT_SECONDS,
+    DEFAULT_RABBITMQ_PORT,
+    DEFAULT_RABBITMQ_PREFETCH_COUNT,
+    DEFAULT_RABBITMQ_QUEUE_NAME,
+    DEFAULT_RABBITMQ_RETRY_DELAY_MS,
+    DEFAULT_RABBITMQ_STARTUP_RETRY_INTERVAL_MS,
+    DEFAULT_RABBITMQ_STARTUP_TIMEOUT_SECONDS,
+    ENV_DEVELOPMENT,
+    ENV_PRODUCTION,
+    LOG_LEVEL_WARNING,
+    MAX_ENCRYPTED_AMPLIFICATION,
+    MAX_ENCRYPTED_ENVELOPE_LIMIT,
+    MAX_ENCRYPTED_PLAINTEXT_LIMIT,
+    MAX_KEY_FILE_BYTES,
+    SENTRY_ENV_DEV,
+    SENTRY_ENV_PROD,
+)
+
+# backend/src/evnt/config.py -> backend/vendor/iglu-central/schemas
+DEFAULT_IGLU_SCHEMAS_DIR: Path = (
+    Path(__file__).resolve().parents[2] / "vendor" / "iglu-central" / "schemas"
+)
+
+
+class SnowplowSchemas(BaseModel):
+    """Iglu ``vendor/name`` keys that get dedicated columns in the events table.
+
+    ``tracker.payload`` routes self-describing JSON with these keys into the
+    ``user``/``page``/``screen``/``ad`` columns instead of the generic
+    ``contexts``/``unstruct`` maps.
+    """
+
+    user_data: str = "dev.snowplow.simple/user_data"
+    page_data: str = "dev.snowplow.simple/page_data"
+    screen_data: str = "dev.snowplow.simple/screen_data"
+    ad_data: str = "dev.snowplow.simple/ad_data"
+    u2s_data: str = "dev.snowplow.simple/u2s_data"
+
+
+class SnowplowEndpoints(BaseModel):
+    """Endpoint paths for Snowplow collectors."""
+
+    post_endpoint: str = DEFAULT_POST_ENDPOINT
+    get_endpoint: str = DEFAULT_GET_ENDPOINT
+    proxy_endpoint: str = DEFAULT_PROXY_ENDPOINT
+
+
+class Snowplow(BaseModel):
+    """Snowplow-specific configuration."""
+
+    schemas: SnowplowSchemas = SnowplowSchemas()
+    endpoints: SnowplowEndpoints = SnowplowEndpoints()
+    user_ip_header: str = "X-Forwarded-For"
+    # Iglu Central's `schemas/` directory, used to validate self-describing
+    # JSON. A payload whose schema is missing here validates as `skipped`, so
+    # the image build refuses to ship without it. The default is the vendored
+    # submodule in a source checkout.
+    iglu_schemas_dir: Path = DEFAULT_IGLU_SCHEMAS_DIR
+
+    @field_validator("user_ip_header")
+    @classmethod
+    def validate_user_ip_header(cls, value: str) -> str:
+        """Ensure the user IP header name is not empty."""
+        header_name = value.strip()
+        if not header_name:
+            raise ValueError("user_ip_header must not be empty")
+        return header_name
+
+
+_VALID_LOG_LEVELS: frozenset[str] = frozenset({
+    "DEBUG",
+    "INFO",
+    "WARNING",
+    "ERROR",
+    "CRITICAL",
+})
+
+
+class LoggingConfig(BaseModel):
+    """Logging configuration."""
+
+    json_format: bool = False
+    level: str = LOG_LEVEL_WARNING
+
+    @field_validator("level")
+    @classmethod
+    def validate_level(cls, v: str) -> str:
+        """Ensure log level is uppercase and valid."""
+        upper_v = v.upper()
+        if upper_v not in _VALID_LOG_LEVELS:
+            raise ValueError(
+                f"Invalid log level: {v}. Must be one of {_VALID_LOG_LEVELS}",
+            )
+        return upper_v
+
+
+class SecurityConfig(BaseModel):
+    """Security-related configuration."""
+
+    disable_docs: bool = True
+    trusted_hosts: list[str] = ["*"]
+    enable_https_redirect: bool = False
+    trust_proxy_headers: bool = True
+    cors_allowed_origins: list[str] = ["*"]
+    cors_allow_credentials: bool = True
+    # Applies to every endpoint. The encrypted endpoint layers its own, much
+    # tighter ceiling on top; this one only has to stop the pathological case.
+    max_request_body_bytes: int = Field(
+        default=DEFAULT_MAX_REQUEST_BODY_BYTES,
+        gt=0,
+    )
+
+    @field_validator("cors_allowed_origins")
+    @classmethod
+    def normalize_cors_allowed_origins(cls, values: list[str]) -> list[str]:
+        """Normalize configured CORS origins for exact browser Origin matching."""
+        normalized: list[str] = []
+
+        for value in values:
+            origin = value.strip()
+            if not origin:
+                raise ValueError("cors_allowed_origins entries must not be empty")
+
+            if origin == "*":
+                normalized.append(origin)
+                continue
+
+            parsed = urlsplit(origin.rstrip("/"))
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not parsed.netloc
+                or parsed.path not in {"", "/"}
+                or parsed.query
+                or parsed.fragment
+                or parsed.username is not None
+                or parsed.password is not None
+            ):
+                raise ValueError(
+                    "cors_allowed_origins entries must be bare HTTP(S) origins",
+                )
+
+            normalized.append(f"{parsed.scheme.lower()}://{parsed.netloc.lower()}")
+
+        if "*" in normalized and len(normalized) > 1:
+            raise ValueError(
+                "cors_allowed_origins cannot mix '*' with explicit origins",
+            )
+
+        return normalized
+
+
+class ElasticAPMConfig(BaseModel):
+    """Elastic APM configuration."""
+
+    enabled: bool = False
+    service_name: str = APP_SLUG
+    server_url: str | None = None
+
+
+class PrometheusConfig(BaseModel):
+    """Prometheus metrics configuration."""
+
+    enabled: bool = False
+    metrics_path: str = DEFAULT_METRICS_PATH
+
+
+class SentryConfig(BaseModel):
+    """Sentry error tracking configuration."""
+
+    enabled: bool = False
+    dsn: str | None = None
+    traces_sample_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    environment: str = (
+        SENTRY_ENV_PROD
+        if os.getenv("EVNT_ENV", ENV_DEVELOPMENT) == ENV_PRODUCTION
+        else SENTRY_ENV_DEV
+    )
+
+
+class EncryptionKeyConfig(BaseModel):
+    """One X25519 key pair the collector can decrypt with.
+
+    Exactly one of ``private_key`` / ``private_key_file`` must be set. The file
+    form exists so deployments can mount the key as a secret instead of baking
+    it into an environment variable, where it would be visible to anything that
+    can read the process environment.
+    """
+
+    kid: str = Field(
+        ...,
+        description=(
+            "Key id echoed in the envelope so clients can pick a key "
+            "without a coordinated flag day"
+        ),
+    )
+    private_key: SecretStr | None = Field(
+        default=None,
+        description="Raw 32-byte X25519 scalar as base64 or hex, or a PKCS#8 PEM",
+    )
+    private_key_file: str | None = Field(
+        default=None,
+        description="Path to a file holding the same material",
+    )
+    enabled: bool = True
+
+    @field_validator("kid")
+    @classmethod
+    def validate_kid(cls, value: str) -> str:
+        """Constrain the key id to what fits the envelope's cleartext field."""
+        from evnt.crypto import validate_kid  # noqa: PLC0415 - avoids an import cycle
+
+        return validate_kid(value.strip())
+
+    @model_validator(mode="after")
+    def validate_source(self) -> EncryptionKeyConfig:
+        """Require exactly one source of key material."""
+        has_inline = self.private_key is not None
+        has_file = bool(self.private_key_file)
+        if has_inline == has_file:
+            raise ValueError(
+                f"encryption key {self.kid!r} must set exactly one of "
+                "private_key or private_key_file",
+            )
+        return self
+
+    def resolve_material(self) -> str | bytes:
+        """Return the raw key material, reading the file if one is configured."""
+        if self.private_key is not None:
+            return self.private_key.get_secret_value()
+        path = Path(self.private_key_file)  # type: ignore[arg-type]
+        try:
+            # A key file is at most a few hundred bytes. Checking first keeps a
+            # path that points at a huge file or a character device from hanging
+            # or exhausting memory during startup.
+            size = path.stat().st_size
+            if size > MAX_KEY_FILE_BYTES:
+                raise ValueError(
+                    f"encryption key {self.kid!r}: {path} is {size} bytes, "
+                    f"expected at most {MAX_KEY_FILE_BYTES}",
+                )
+            return path.read_bytes()
+        except OSError as exc:
+            raise ValueError(
+                f"encryption key {self.kid!r}: cannot read {path}: {exc}",
+            ) from exc
+
+
+class EncryptionConfig(BaseModel):
+    """Encrypted ingest endpoint configuration.
+
+    Off by default: the endpoint is only mounted when this is enabled, so a
+    deployment that does not use sealed payloads exposes no extra surface.
+    """
+
+    enabled: bool = False
+    # Lives here rather than in `common.snowplow.endpoints` with the plaintext
+    # paths because the path is meaningless without the keys and limits below,
+    # and the whole block is mounted or not as a unit.
+    endpoint: str = DEFAULT_ENCRYPTED_ENDPOINT
+    keys: list[EncryptionKeyConfig] = []
+    # These ceilings are what bound event-loop time per request, since unsealing
+    # runs inline. Capped rather than merely positive so raising them cannot
+    # silently turn one request into hundreds of megabytes of work.
+    max_envelope_bytes: int = Field(
+        default=DEFAULT_ENCRYPTED_MAX_ENVELOPE_BYTES,
+        gt=0,
+        le=MAX_ENCRYPTED_ENVELOPE_LIMIT,
+    )
+    max_plaintext_bytes: int = Field(
+        default=DEFAULT_ENCRYPTED_MAX_PLAINTEXT_BYTES,
+        gt=0,
+        le=MAX_ENCRYPTED_PLAINTEXT_LIMIT,
+    )
+    max_query_bytes: int = Field(
+        default=DEFAULT_ENCRYPTED_MAX_QUERY_BYTES,
+        gt=0,
+        le=MAX_ENCRYPTED_ENVELOPE_LIMIT,
+    )
+
+    @field_validator("endpoint")
+    @classmethod
+    def validate_endpoint(cls, value: str) -> str:
+        """Ensure the endpoint is a rooted path."""
+        path = value.strip()
+        if not path.startswith("/"):
+            raise ValueError("endpoint must start with '/'")
+        return path.rstrip("/") or "/"
+
+    @model_validator(mode="after")
+    def validate_amplification(self) -> EncryptionConfig:
+        """Keep the gzip flag from becoming a memory-amplification lever.
+
+        The ratio between the two ceilings is exactly how much memory one
+        small request can claim, so it is bounded explicitly rather than left
+        to whatever two independently-set numbers happen to imply.
+        """
+        ratio = self.max_plaintext_bytes / self.max_envelope_bytes
+        if ratio > MAX_ENCRYPTED_AMPLIFICATION:
+            raise ValueError(
+                f"max_plaintext_bytes / max_envelope_bytes is {ratio:.1f}, above "
+                f"the limit of {MAX_ENCRYPTED_AMPLIFICATION}; a compressed "
+                "payload could claim that multiple of the request size in memory",
+            )
+        return self
+
+
+class ProxyConfig(BaseModel):
+    """Proxy configuration for external services."""
+
+    domains: list[str] = ["google-analytics.com", "www.googletagmanager.com"]
+    paths: list[str] = ["analytics.js", "gtm.js"]
+    # Outbound ports the proxy is allowed to reach on an allowlisted host.
+    # The hostname allowlist alone does not constrain the port, so this keeps
+    # the proxy on standard web ports by default while letting operators opt
+    # into additional ports for hosts they explicitly trust. A target with no
+    # explicit port (the scheme default) is always permitted.
+    allowed_ports: list[int] = [80, 443]
+
+
+class PerformanceConfig(BaseModel):
+    """Performance tuning configuration."""
+
+    max_concurrent_connections: int = Field(default=100, gt=0)
+    db_pool_size: int = Field(default=5, gt=0)
+    user_agent_cache_size: int = Field(default=32768, ge=0)
+    cpu_task_concurrency: int = Field(default=8, gt=0)
+    healthcheck_cache_ttl_seconds: float = Field(default=2.0, ge=0.0)
+    enable_access_log: bool = True
+    # ``/live`` is polled by container orchestrators every few seconds and
+    # never carries useful information, so keep it out of the access log.
+    access_log_excluded_paths: list[str] = ["/live"]
+    enable_brotli: bool = True
+    brotli_excluded_paths: list[str] = []
+
+
+class ClickHouseConnection(BaseModel):
+    """ClickHouse connection parameters."""
+
+    interface: str = DEFAULT_CLICKHOUSE_INTERFACE
+    host: str = DEFAULT_CLICKHOUSE_HOST
+    port: int = DEFAULT_CLICKHOUSE_PORT
+    username: str = DEFAULT_CLICKHOUSE_USERNAME
+    database: str = DEFAULT_CLICKHOUSE_DATABASE
+    password: SecretStr = SecretStr("password")
+    connect_timeout: int = DEFAULT_DB_CONNECT_TIMEOUT
+
+    def as_client_kwargs(self) -> dict[str, Any]:
+        """Return connection kwargs with the password unwrapped for the client."""
+        data = self.model_dump()
+        data["password"] = self.password.get_secret_value()
+        return data
+
+
+_SQL_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9_]+")
+
+
+class ClickHouseConfiguration(BaseModel):
+    """ClickHouse table configuration."""
+
+    database: str = DEFAULT_DATABASE_NAME
+    cluster_name: str = ""
+
+    @field_validator("database", "cluster_name")
+    @classmethod
+    def validate_sql_identifier(cls, value: str) -> str:
+        """Reject database/cluster names that are not plain SQL identifiers.
+
+        These values are interpolated directly into DDL (``ON CLUSTER`` /
+        ``Distributed(...)`` / qualified table names), so constraining them to
+        ``[A-Za-z0-9_]`` closes a config-injection surface. ``cluster_name`` may
+        be empty (meaning "no cluster").
+        """
+        if value and not _SQL_IDENTIFIER_RE.fullmatch(value):
+            raise ValueError(
+                f"must be a plain SQL identifier ([A-Za-z0-9_]), got {value!r}",
+            )
+        return value
+
+    # Can be overridden via environment variables such as:
+    # EVNT_CLICKHOUSE__CONFIGURATION__TABLES__EVNT__LOCAL__ENGINE=
+    #   "ReplacingMergeTree()"
+    tables: dict[str, Any] = {
+        "evnt": {
+            "enabled": True,
+            "local": {
+                "name": "local",
+                "engine": "MergeTree()",
+                "partition_by": "toYYYYMM(time)",
+                "order_by": ", ".join([
+                    "app",
+                    "platform",
+                    "app_id",
+                    "event_type",
+                    "toDate(time)",
+                    "event.category",
+                    "event.action",
+                    "page",
+                    "device_id",
+                    "cityHash64(device_id)",
+                    "session_id",
+                    "time",
+                ]),
+                "sample_by": "cityHash64(device_id)",
+                "settings": "index_granularity = 8192",
+            },
+            "distributed": {
+                "name": "distributed",
+                "sample_by": "cityHash64(device_id)",
+            },
+        },
+    }
+
+
+class ClickHouseConfig(BaseModel):
+    """Complete ClickHouse configuration."""
+
+    connection: ClickHouseConnection = ClickHouseConnection()
+    configuration: ClickHouseConfiguration = ClickHouseConfiguration()
+    tables: dict[str, Any] = {}
+    startup_timeout_seconds: int = Field(
+        default=DEFAULT_CLICKHOUSE_STARTUP_TIMEOUT_SECONDS,
+        gt=0,
+    )
+    startup_retry_interval_ms: int = Field(
+        default=DEFAULT_CLICKHOUSE_STARTUP_RETRY_INTERVAL_MS,
+        gt=0,
+    )
+
+
+class DirectInsertConfig(BaseModel):
+    """Direct ClickHouse insert settings."""
+
+    async_insert: bool = True
+    wait_for_async_insert: bool = False
+
+
+class RabbitMQConfig(BaseModel):
+    """RabbitMQ-backed ingest settings."""
+
+    host: str = DEFAULT_RABBITMQ_HOST
+    port: int = Field(default=DEFAULT_RABBITMQ_PORT, gt=0)
+    username: str = "guest"
+    password: SecretStr = SecretStr("guest")
+    virtualhost: str = "/"
+    queue_name: str = DEFAULT_RABBITMQ_QUEUE_NAME
+    failed_queue_name: str | None = None
+    prefetch_count: int = Field(default=DEFAULT_RABBITMQ_PREFETCH_COUNT, gt=0)
+    batch_size: int = Field(default=DEFAULT_RABBITMQ_BATCH_SIZE, gt=0)
+    batch_timeout_ms: int = Field(default=DEFAULT_RABBITMQ_BATCH_TIMEOUT_MS, gt=0)
+    retry_delay_ms: int = Field(default=DEFAULT_RABBITMQ_RETRY_DELAY_MS, gt=0)
+    insert_timeout_seconds: float = Field(
+        default=DEFAULT_RABBITMQ_INSERT_TIMEOUT_SECONDS,
+        gt=0,
+    )
+    connect_timeout_seconds: int = Field(
+        default=DEFAULT_RABBITMQ_CONNECT_TIMEOUT_SECONDS,
+        gt=0,
+    )
+    startup_timeout_seconds: int = Field(
+        default=DEFAULT_RABBITMQ_STARTUP_TIMEOUT_SECONDS,
+        gt=0,
+    )
+    startup_retry_interval_ms: int = Field(
+        default=DEFAULT_RABBITMQ_STARTUP_RETRY_INTERVAL_MS,
+        gt=0,
+    )
+
+    @model_validator(mode="after")
+    def validate_failed_queue_name(self) -> RabbitMQConfig:
+        """Ensure the failed queue is distinct from the main queue."""
+
+        if self.failed_queue_name and self.failed_queue_name == self.queue_name:
+            raise ValueError("failed_queue_name must differ from queue_name")
+        return self
+
+    @property
+    def resolved_failed_queue_name(self) -> str:
+        """Return the configured failed queue or a derived default."""
+
+        return self.failed_queue_name or f"{self.queue_name}.failed"
+
+
+class IngestConfig(BaseModel):
+    """Ingest pipeline settings."""
+
+    mode: Literal["direct", "rabbitmq"] = DEFAULT_INGEST_MODE
+    direct: DirectInsertConfig = DirectInsertConfig()
+    rabbitmq: RabbitMQConfig = RabbitMQConfig()
+
+
+class CommonConfig(BaseModel):
+    """Common application configuration."""
+
+    demo: bool = False
+    # The built demo SPA (`frontend/dist`); served at /demo when `demo` is on.
+    demo_dir: Path = Path("../frontend/dist")
+    # Served at /static; `evnt scripts download` puts the Snowplow tracker here.
+    static_dir: Path = Path("static")
+    service_name: str = APP_SLUG
+    hostname: AnyHttpUrl = AnyHttpUrl("http://localhost:8000")
+    snowplow: Snowplow = Snowplow()
+
+
+class Settings(BaseSettings):
+    """Main application settings populated from file + env vars.
+
+    Nested models are supported via double underscore environment variable keys
+    (e.g. ``EVNT_LOGGING__LEVEL=DEBUG``).
+
+    Example:
+        >>> from evnt.config import settings
+        >>> settings.logging.level
+        'WARNING'
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="EVNT_",
+        case_sensitive=False,
+        env_nested_delimiter="__",
+    )
+
+    logging: LoggingConfig = LoggingConfig()
+    security: SecurityConfig = SecurityConfig()
+    elastic_apm: ElasticAPMConfig = ElasticAPMConfig()
+    prometheus: PrometheusConfig = PrometheusConfig()
+    sentry: SentryConfig = SentryConfig()
+    proxy: ProxyConfig = ProxyConfig()
+    performance: PerformanceConfig = PerformanceConfig()
+    common: CommonConfig = CommonConfig()
+    clickhouse: ClickHouseConfig = ClickHouseConfig()
+    ingest: IngestConfig = IngestConfig()
+    encryption: EncryptionConfig = EncryptionConfig()
+
+
+settings = Settings()
