@@ -1,49 +1,17 @@
-# Already excluded
-Dockerfile
-.venv
-.ruff_cache
-.github
-.vscode
+# Allowlist: the image only needs these; everything else stays out of the
+# build context (local virtualenvs, node_modules, caches, secrets in .env).
+*
+!LICENSE
+!THIRD_PARTY_NOTICES.md
+!backend/pyproject.toml
+!backend/uv.lock
+!backend/.python-version
+!backend/src/
+!backend/vendor/iglu-central/schemas/
+!frontend/
 
-# Version control
-.git
-.gitignore
-
-# Python — anchored to context root so they don't match
-# evnt/routers/demo/web/src/lib or web/dist anywhere down the tree.
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-/.Python
-/build/
-/develop-eggs/
-/dist/
-/downloads/
-/eggs/
-/.eggs/
-/lib/
-/lib64/
-/parts/
-/sdist/
-/var/
-/wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Testing
-.coverage
-.pytest_cache/
-htmlcov/
-.tox/
-
-# Logs
-*.log
-
-# OS specific
-.DS_Store
-
-# Demo Vue SPA build artifacts (built inside the web-builder stage)
-evnt/routers/demo/web/node_modules
-evnt/routers/demo/web/dist
+backend/src/evnt/tests/
+**/__pycache__/
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
