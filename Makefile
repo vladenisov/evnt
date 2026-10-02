@@ -22,9 +22,9 @@ help: ## Show this help
 .PHONY: install install-be install-fe install-hooks
 install: install-be install-fe install-hooks ## Install backend + frontend deps, the Iglu schemas and git hooks
 
-install-be: ## Install backend deps (uv sync) and the iglu-central submodule
+install-be: ## Install backend deps with every extra (CI parity) and the iglu-central submodule
 	git -C $(ROOT) submodule update --init --depth 1
-	cd $(BACKEND) && uv sync
+	cd $(BACKEND) && uv sync --all-extras
 
 install-fe: ## Install frontend deps (pnpm install)
 	cd $(FRONTEND) && pnpm install

@@ -46,7 +46,10 @@ make dev-be     # uv run uvicorn evnt.main:app --reload --port 8000
 
 ## Backend workflow
 
-Everything runs from `backend/` through `uv run`, or from the root via `make`:
+Everything runs from `backend/` through `uv run`, or from the root via `make`.
+Install with `uv sync --all-extras` (what `make install-be` and CI do): mypy
+only checks the optional integrations (APM, Sentry, crypto) when they are
+installed, so a plain `uv sync` can pass locally and fail in CI.
 
 | Gate | Command | Make |
 | --- | --- | --- |

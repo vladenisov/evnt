@@ -125,7 +125,9 @@ def _add_integrations(app: FastAPI, config: Settings) -> None:
                 "Install the optional extra: `uv sync --extra apm`.",
             ) from exc
 
-        app.add_middleware(ElasticAPM, client=create_elastic_apm_client())
+        # ElasticAPM's `app` parameter is not positional-only, which Starlette's
+        # _MiddlewareFactory protocol requires; the call itself is correct.
+        app.add_middleware(ElasticAPM, client=create_elastic_apm_client())  # type: ignore[arg-type]
 
     if config.prometheus.enabled:
         from prometheus_fastapi_instrumentator import Instrumentator  # noqa: PLC0415
