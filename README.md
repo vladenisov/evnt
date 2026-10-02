@@ -19,15 +19,23 @@
 git clone https://github.com/denisov-vlad/evnt.git
 cd evnt
 
+git submodule update --init --depth 1   # Iglu schemas; the image build requires them
+
 # 1. Bring up ClickHouse first (the app waits for it).
 docker compose up -d clickhouse
 
 # 2. One-time: create the `evnt` database and tables (idempotent).
-docker compose run --rm app uv run python cli.py db init
+docker compose run --rm app evnt db init
 
-# 3. Start the collector (and worker, if you want RabbitMQ mode).
+# 3. Start the collector.
 docker compose up -d
+#    Or with the RabbitMQ buffer: the profile only adds the services,
+#    the ingest mode has to be switched as well.
+# EVNT_INGEST__MODE=rabbitmq docker compose --profile rabbitmq up -d
 ```
+
+For development (watch mode, tests, linters) see [CONTRIBUTING.md](CONTRIBUTING.md);
+`make` lists every shortcut.
 
 Open **<http://localhost:8000/demo/>**. The demo SPA has three tabs:
 
@@ -54,15 +62,31 @@ docker build --build-arg BUILD_DEMO=false -t evnt .
 
 The full tracker matrix (Java, Go, .NET, Roku, Unity, Lua, …) is at <https://docs.snowplow.io/docs/collecting-data/collecting-from-own-applications/>.
 
-If you want to host the official Snowplow JS bundle from your own domain, run:
+The Docker image already ships the official Snowplow JS bundle, served
+first-party at `/static/sp/sp.js`. Outside the image, fetch it with:
 
 ```bash
-uv run python evnt/cli.py scripts download
+cd backend && uv run evnt scripts download
 ```
 
-That places `sp.js` (and plugins) into `evnt/static/sp/`, served at
-`/static/sp/sp.js`. The vendored subtree is gitignored and regenerated on every
-image build; `evnt/static/` itself is for assets this project owns.
+That places `sp.js` (and plugins) into `backend/static/sp/` (the
+`EVNT_COMMON__STATIC_DIR` directory, `/app/static` in the image). The vendored
+subtree is gitignored and regenerated on every image build.
+
+## Running the image
+
+```bash
+docker run -d -p 8000:8000 \
+  -e EVNT_CLICKHOUSE__CONNECTION__HOST=clickhouse.internal \
+  -e EVNT_CLICKHOUSE__CONNECTION__PASSWORD=... \
+  vladenisov/evnt:latest
+docker run --rm -e EVNT_CLICKHOUSE__CONNECTION__HOST=... vladenisov/evnt evnt db init
+```
+
+The container runs as the unprivileged `evnt` user (uid 1000) and listens on
+**port 8000**. Its `HEALTHCHECK` polls `/live`; point load-balancer readiness
+checks at `/`, which also checks the ingest backend. Every `evnt` CLI command
+is available inside the image (`docker run --rm vladenisov/evnt evnt settings`).
 
 ## Configuration
 
@@ -78,7 +102,7 @@ EVNT_SECURITY__CORS_ALLOWED_ORIGINS='["https://example.com"]'
 Inspect the full config tree (with defaults) any time:
 
 ```bash
-uv run python evnt/cli.py settings
+evnt settings          # from backend/: uv run evnt settings
 ```
 
 A starter [`.env.example`](.env.example) lists the most common runtime variables.
@@ -141,8 +165,7 @@ The optional proxy at `/proxy` fetches allowlisted third-party analytics scripts
 
 | Setting | Default | Notes |
 | --- | --- | --- |
-| `EVNT_PROXY__DOMAINS` | `["google-analytics.com", "www.googletagmanager.com"]` | Hostname allowlist. |
-| `EVNT_PROXY__PATHS` | `["analytics.js", "gtm.js"]` | Path allowlist. |
+| `EVNT_PROXY__DOMAINS` | `["google-analytics.com", "www.googletagmanager.com"]` | Hostname allowlist: `/proxy/route` fetches only from these hosts, and `/proxy/hash` rewrites only their URLs. |
 | `EVNT_PROXY__ALLOWED_PORTS` | `[80, 443]` | Outbound ports the proxy may reach on an allowlisted host. A target with no explicit port (the scheme default) is always permitted; any other port is rejected with `403`. |
 
 Redirects are **not** followed, so an allowlisted host cannot bounce the proxy to an internal target.
@@ -154,8 +177,8 @@ Redirects are **not** followed, so an allowlisted host cannot bounce the proxy t
 The endpoint is off by default and is only mounted when enabled, so deployments that do not use it expose no extra surface.
 
 ```bash
-uv sync --extra crypto          # cryptography is an optional dependency
-uv run python evnt/cli.py keys generate --kid=k1
+uv sync --extra crypto          # from backend/; cryptography is optional
+uv run evnt keys generate --kid=k1
 ```
 
 That prints a public key to embed in your clients and a private key for the collector:
@@ -203,7 +226,7 @@ key    = HKDF-SHA256(ikm=shared, salt="", info="evnt/e/v1" || epk || recipient_p
 aad    = envelope[0 : 39+N]
 ```
 
-`evnt/core/crypto.py::seal_envelope` is the executable specification — a client implementation is correct exactly when it produces envelopes that function would produce. It emits gzip, but the collector auto-detects the container, so a client using Android's `Deflater` (zlib) rather than `GZIPOutputStream` (gzip) interoperates without changes.
+`backend/src/evnt/crypto.py::seal_envelope` is the executable specification — a client implementation is correct exactly when it produces envelopes that function would produce. It emits gzip, but the collector auto-detects the container, so a client using Android's `Deflater` (zlib) rather than `GZIPOutputStream` (gzip) interoperates without changes.
 
 Unsealing runs inline on the event loop: a typical batch measures ~0.04 ms and the 1 MiB ceiling ~0.7 ms, which is why the ceilings above are what bound per-request cost. Raising them raises that cost proportionally.
 
@@ -221,7 +244,7 @@ It is **not** client authentication and **not** replay protection: the public ke
 
 ### Secrets
 
-`EVNT_CLICKHOUSE__CONNECTION__PASSWORD` and `EVNT_INGEST__RABBITMQ__PASSWORD` are stored as Pydantic `SecretStr`: they are still configured the same way via environment variables, but their values are redacted from config dumps (`cli.py settings`) and logs.
+`EVNT_CLICKHOUSE__CONNECTION__PASSWORD` and `EVNT_INGEST__RABBITMQ__PASSWORD` are stored as Pydantic `SecretStr`: they are still configured the same way via environment variables, but their values are redacted from config dumps (`evnt settings`) and logs.
 
 ### ClickHouse and RabbitMQ
 
@@ -243,12 +266,12 @@ On startup the app (and, in `rabbitmq` mode, the worker) retries the ClickHouse 
 
 ### RabbitMQ worker
 
-In `rabbitmq` mode a separate worker drains the queue and batch-inserts into ClickHouse (`cli.py queue worker`). It shuts down cleanly on `SIGTERM` (final flush + close), publishes to the failed queue with publisher confirms to avoid silent loss, times out and requeues a stuck ClickHouse insert, and backs off with capped exponential delay on downstream outages.
+In `rabbitmq` mode a separate worker drains the queue and batch-inserts into ClickHouse (`evnt queue worker`). It shuts down cleanly on `SIGTERM` (final flush + close), publishes to the failed queue with publisher confirms to avoid silent loss, times out and requeues a stuck ClickHouse insert, and backs off with capped exponential delay on downstream outages.
 
 The worker writes a liveness file that a dedicated healthcheck reads:
 
 ```bash
-uv run python evnt/cli.py queue healthcheck
+evnt queue healthcheck
 ```
 
 This is wired as the worker container `HEALTHCHECK` in [`compose.yml`](compose.yml); it reports unhealthy if the worker stops refreshing liveness. The staleness threshold stays above the worker's max backoff so a sustained backend outage is not misread as a dead worker.
@@ -259,8 +282,8 @@ This project's own source code is licensed under BSD 3-Clause (see [LICENSE](LIC
 
 It interoperates with, and optionally redistributes unmodified copies of, third-party components from Snowplow Analytics Ltd. and other authors:
 
-- **Snowplow JavaScript tracker** (`sp.js`, plugins) — BSD 3-Clause, © 2022 Snowplow Analytics Ltd, © 2010 Anthon Pang. Fetched on demand by `cli.py scripts download`; not committed to this repo.
-- **Iglu Central schemas** — Apache License 2.0, © Snowplow Analytics Ltd. Included as a git submodule at `evnt/vendor/iglu-central`, unmodified.
+- **Snowplow JavaScript tracker** (`sp.js`, plugins) — BSD 3-Clause, © 2022 Snowplow Analytics Ltd, © 2010 Anthon Pang. Fetched by `evnt scripts download` at image build time; not committed to this repo.
+- **Iglu Central schemas** — Apache License 2.0, © Snowplow Analytics Ltd. Included as a git submodule at `backend/vendor/iglu-central`, unmodified.
 
 Full third-party copyright and license notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), which downstream packagers **must** redistribute alongside any Docker image or artifact that bundles the tracker scripts or Iglu schemas.
 
