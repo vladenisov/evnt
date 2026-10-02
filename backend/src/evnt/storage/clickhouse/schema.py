@@ -29,7 +29,7 @@ class ColumnDef(NamedTuple):
 
     @property
     def type_name(self) -> str:
-        return self.type.name
+        return str(self.type.name)
 
     @property
     def create_expression(self) -> str:
@@ -62,7 +62,7 @@ class TupleColumnDef(NamedTuple):
     ttl_expression: str | None = None
 
     @property
-    def type(self):
+    def type(self) -> Tuple:
         return Tuple(
             type_def=TypeDef(
                 keys=tuple(col.name for col in self.elements),
@@ -72,7 +72,7 @@ class TupleColumnDef(NamedTuple):
 
     @property
     def type_name(self) -> str:
-        return self.type.name
+        return str(self.type.name)
 
     @property
     def create_expression(self) -> str:

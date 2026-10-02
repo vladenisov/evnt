@@ -1,22 +1,16 @@
-"""Elastic APM client integration.
+"""Elastic APM client; imported only when ``elastic_apm.enabled`` is on."""
 
-The APM client is built lazily via :func:`create_elastic_apm_client` rather than
-at module import time, so importing this module has no side effects (no config
-reading or network/transport setup) until a caller explicitly opts in.
-"""
-
-from evnt.config import settings
+from elasticapm import Client
 from elasticapm.contrib.starlette import make_apm_client
 
+from evnt.config import settings
 
-def create_elastic_apm_client():
-    """Build and return an Elastic APM client from the current settings.
 
-    The Elastic APM configuration is read inside the function so the client is
-    created lazily on call, never at import time.
-    """
+def create_elastic_apm_client() -> Client:
+    """Build an Elastic APM client from the current settings."""
     elastic_config = settings.elastic_apm.model_dump()
     elastic_config.pop("enabled")
     elastic_config["SERVICE_NAME"] = settings.common.service_name
 
-    return make_apm_client(elastic_config)
+    client: Client = make_apm_client(elastic_config)
+    return client

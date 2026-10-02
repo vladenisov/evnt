@@ -41,9 +41,7 @@ logger = structlog.get_logger(__name__)
 _REJECTION_DETAIL: Final[str] = "invalid encrypted payload"
 
 # The browser sealer, served with its key material substituted in.
-_SEAL_SCRIPT_PATH: Final[Path] = (
-    Path(__file__).resolve().parent.parent / "assets" / "seal.js"
-)
+_SEAL_SCRIPT_PATH: Final[Path] = Path(__file__).resolve().parent.parent / "assets" / "seal.js"
 _SEAL_CONFIG_TOKEN: Final[str] = "__EVNT_CONFIG__"
 # Long enough that the script is not refetched on every page view, short enough
 # that a key rotation reaches browsers within the hour without a purge.

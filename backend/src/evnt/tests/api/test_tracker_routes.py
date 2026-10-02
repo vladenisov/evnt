@@ -9,9 +9,10 @@ under test here is the HTTP/status/response-model contract -- payload parsing
 itself is covered by the unit tests under ``tests/routers/tracker/parsers/``.
 """
 
-from evnt.constants import CONTENT_TYPE_GIF, TRACKING_PIXEL
-from evnt.api.deps import get_db_connector
 from fastapi.testclient import TestClient
+
+from evnt.api.deps import get_db_connector
+from evnt.constants import CONTENT_TYPE_GIF, TRACKING_PIXEL
 from evnt.tests.support import RecordingConnector, build_app, minimal_tp2_payload
 
 POST_ENDPOINT = "/tracker"
@@ -92,9 +93,7 @@ def test_tracker_post_with_empty_batch_inserts_no_rows(monkeypatch):
         response = client.post(
             POST_ENDPOINT,
             json={
-                "schema": (
-                    "iglu:com.snowplowanalytics.snowplow/payload_data/jsonschema/1-0-4"
-                ),
+                "schema": ("iglu:com.snowplowanalytics.snowplow/payload_data/jsonschema/1-0-4"),
                 "data": [],
             },
         )

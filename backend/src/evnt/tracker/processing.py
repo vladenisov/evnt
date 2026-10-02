@@ -6,12 +6,13 @@ from ipaddress import IPv4Address, IPv6Address
 from typing import Any
 
 import structlog
+
 from evnt.observability.tracing import async_capture_span
+from evnt.tracker.ip import convert_ip
 from evnt.tracker.models import (
     PayloadElementModel,
     PayloadModel,
 )
-from evnt.tracker.ip import convert_ip
 from evnt.tracker.payload import dump_insert_model, parse_payload
 from evnt.tracker.useragent import parse_agent_for_insert_async
 
@@ -47,10 +48,7 @@ async def process_data(
     ua_data = await parse_agent_for_insert_async(user_agent)
 
     # Extract payload data
-    if isinstance(body, PayloadModel):
-        data = body.data
-    else:
-        data = [body]
+    data = body.data if isinstance(body, PayloadModel) else [body]
 
     # Process each payload element
     result = []

@@ -1,7 +1,10 @@
 from types import SimpleNamespace
 
-import evnt.cli as cli_module
 import pytest
+
+import evnt.cli as cli_module
+import evnt.ingest.rabbitmq as rabbitmq_module
+from evnt.storage.clickhouse import client as clickhouse_client
 
 
 class _FakeClient:
@@ -51,10 +54,8 @@ class _FakeConnection:
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_check_queue_worker_dependencies_returns_healthy_status(
     monkeypatch,
-    anyio_backend,
 ):
     client = _FakeClient(result=1)
     channel = _FakeChannel()
@@ -68,8 +69,8 @@ async def test_check_queue_worker_dependencies_returns_healthy_status(
     async def _fake_connect_rabbitmq(config):
         return connection
 
-    monkeypatch.setattr(cli_module, "get_async_client", _fake_get_async_client)
-    monkeypatch.setattr(cli_module, "connect_rabbitmq", _fake_connect_rabbitmq)
+    monkeypatch.setattr(clickhouse_client, "get_async_client", _fake_get_async_client)
+    monkeypatch.setattr(rabbitmq_module, "connect_rabbitmq", _fake_connect_rabbitmq)
 
     status = await cli_module._check_queue_worker_dependencies()
 
@@ -78,13 +79,8 @@ async def test_check_queue_worker_dependencies_returns_healthy_status(
         "rabbitmq": True,
     }
     assert client_kwargs["query_limit"] == 0
-    assert (
-        client_kwargs["connector_limit"] == cli_module.settings.performance.db_pool_size
-    )
-    assert (
-        client_kwargs["connector_limit_per_host"]
-        == cli_module.settings.performance.db_pool_size
-    )
+    assert client_kwargs["connector_limit"] == cli_module.settings.performance.db_pool_size
+    assert client_kwargs["connector_limit_per_host"] == cli_module.settings.performance.db_pool_size
     assert "pool_mgr" not in client_kwargs
     assert channel.declare_calls == [
         {
@@ -104,10 +100,8 @@ async def test_check_queue_worker_dependencies_returns_healthy_status(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_check_queue_worker_dependencies_reports_unhealthy_status(
     monkeypatch,
-    anyio_backend,
 ):
     async def _fail_clickhouse(**kwargs):
         raise RuntimeError("clickhouse down")
@@ -115,8 +109,8 @@ async def test_check_queue_worker_dependencies_reports_unhealthy_status(
     async def _fail_rabbitmq(config):
         raise RuntimeError("rabbitmq down")
 
-    monkeypatch.setattr(cli_module, "get_async_client", _fail_clickhouse)
-    monkeypatch.setattr(cli_module, "connect_rabbitmq", _fail_rabbitmq)
+    monkeypatch.setattr(clickhouse_client, "get_async_client", _fail_clickhouse)
+    monkeypatch.setattr(rabbitmq_module, "connect_rabbitmq", _fail_rabbitmq)
 
     status = await cli_module._check_queue_worker_dependencies()
 

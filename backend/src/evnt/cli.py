@@ -1,30 +1,21 @@
-"""Command Line Interface for evnt.
+"""Operational CLI: ``evnt <group> <command>``.
 
-Usage examples (from project root):
+    evnt settings                  # effective settings as JSON (secrets masked)
+    evnt settings hostname         # one value, via Fire attribute traversal
+    evnt db init                   # create the ClickHouse database and tables
+    evnt queue worker              # run the RabbitMQ -> ClickHouse batch worker
+    evnt queue healthcheck         # exit 1 unless the worker is alive and healthy
+    evnt scripts download          # self-host the Snowplow JS tracker
+    evnt keys generate --kid=k1    # key pair for the encrypted endpoint
+    evnt keys public --kid=k1      # public half of a configured key
 
-# Print settings as pretty JSON
-uv run evnt/cli.py settings
-# Print raw pydantic Settings object repr
-uv run evnt/cli.py settings --raw
-# Fire attribute traversal (prints common.hostname)
-uv run evnt/cli.py settings hostname
-# Create ClickHouse databases & tables
-uv run evnt/cli.py db init
-# Start RabbitMQ ingest worker
-uv run evnt/cli.py queue worker
-# Download tracker scripts (sp.js + plugins)
-uv run evnt/cli.py scripts download
-
-    # Generate an X25519 key pair for the encrypted /e endpoint
-    uv run evnt/cli.py keys generate --kid=k1
-
-The `db init` command replaces the previous automatic table creation that
-occurred during FastAPI lifespan startup.
+Commands import their backends lazily so that light commands (``settings``,
+``scripts``, ``keys``) start fast and do not load the ClickHouse async stack.
 """
 
-from __future__ import annotations
-
 import asyncio
+import base64
+import json
 import signal
 import time
 from io import BytesIO
@@ -36,254 +27,172 @@ import fire
 import httpx
 import orjson
 import structlog
+
 from evnt.config import settings
 from evnt.constants import WORKER_LIVENESS_PATH, WORKER_LIVENESS_STALE_SECONDS
 from evnt.observability.logging import init_logging
-from starlette.status import HTTP_200_OK
 
-# ClickHouse ping query used for readiness checks
-_CH_READINESS_QUERY: str = "SELECT 1"
-# HTTP request timeout (seconds) for downloading tracker script bundles
-_SCRIPT_DOWNLOAD_TIMEOUT_SECONDS: int = 60
+_SCRIPT_DOWNLOAD_TIMEOUT_SECONDS = 60
+DEFAULT_TRACKER_VERSION = "4.10.2"
 
 
-def _build_clickhouse_client_kwargs(perf_conf: Any, ch_conf: Any) -> dict[str, Any]:
-    """Build async ClickHouse client kwargs shared by CLI commands."""
-
-    return {
-        **ch_conf.connection.as_client_kwargs(),
-        "query_limit": 0,
-        "connector_limit": perf_conf.db_pool_size,
-        "connector_limit_per_host": perf_conf.db_pool_size,
-    }
-
-
-async def get_async_client(**kwargs: Any) -> Any:
-    """Lazily create the async ClickHouse client.
-
-    The scripts CLI does not need ClickHouse. Keeping this import lazy prevents
-    static-asset downloads from requiring clickhouse-connect's async extra.
-    """
-
-    from clickhouse_connect import (  # noqa: PLC0415
-        get_async_client as create_async_client,
-    )
-
-    return await create_async_client(**kwargs)
-
-
-def _clickhouse_errors() -> tuple[type[Exception], type[Exception]]:
-    """Return ClickHouse driver exceptions without importing them at CLI load."""
-
-    from clickhouse_connect.driver.exceptions import (  # noqa: PLC0415
-        ClickHouseError,
-        DatabaseError,
-    )
-
-    return ClickHouseError, DatabaseError
-
-
-def _clickhouse_connector_classes() -> tuple[type[Any], type[Any]]:
-    """Return ClickHouse connector classes only for DB/worker commands."""
-
-    from evnt.storage.clickhouse import (  # noqa: PLC0415
-        ClickHouseConnector,
-        TableManager,
-    )
-
-    return ClickHouseConnector, TableManager
-
-
-def _retry_clickhouse_startup() -> Any:
-    """Return the shared ClickHouse startup retry helper lazily."""
-
-    from evnt.lifespan import retry_clickhouse_startup  # noqa: PLC0415
-
-    return retry_clickhouse_startup
-
-
-def _rabbitmq_batch_worker() -> type[Any]:
-    """Return the RabbitMQ worker class only for queue worker startup."""
-
-    from evnt.ingest import RabbitMQBatchWorker  # noqa: PLC0415
-
-    return RabbitMQBatchWorker
-
-
-async def connect_rabbitmq(config: Any) -> Any:
-    """Lazily connect to RabbitMQ so scripts commands stay dependency-light."""
-
-    from evnt.ingest.rabbitmq import connect_rabbitmq as create_connection  # noqa: PLC0415
-
-    return await create_connection(config)
-
-
-def _build_clickhouse_insert_settings(*, require_wait: bool = False) -> dict[str, int]:
-    """Build ClickHouse insert settings for direct and worker writes."""
-
-    direct_config = settings.ingest.direct
-    if not direct_config.async_insert:
-        return {}
-
-    return {
-        "async_insert": 1,
-        "wait_for_async_insert": int(
-            direct_config.wait_for_async_insert or require_wait,
-        ),
-    }
+def _init_logging() -> None:
+    init_logging(settings.logging.json_format, settings.logging.level)
 
 
 async def _check_queue_worker_dependencies() -> dict[str, bool]:
-    """Check the RabbitMQ worker dependencies."""
+    """Check that the worker can reach ClickHouse and both of its queues."""
+    from evnt.ingest.rabbitmq import connect_rabbitmq  # noqa: PLC0415
+    from evnt.storage.clickhouse import client as clickhouse  # noqa: PLC0415
 
-    queue_logger = structlog.get_logger("cli.queue.healthcheck")
-    perf_conf = settings.performance
-    ch_conf = settings.clickhouse
+    log = structlog.get_logger("cli.queue.healthcheck")
     queue_conf = settings.ingest.rabbitmq
-
-    status = {
-        "clickhouse": False,
-        "rabbitmq": False,
-    }
-    client = None
-    connection = None
-    channel = None
+    status = {"clickhouse": False, "rabbitmq": False}
 
     try:
+        ch_client = await clickhouse.create_client(
+            settings.clickhouse,
+            settings.performance.db_pool_size,
+        )
+    except Exception as exc:
+        log.warning("Worker ClickHouse health check failed", error=str(exc))
+    else:
         try:
-            client = await get_async_client(
-                **_build_clickhouse_client_kwargs(perf_conf, ch_conf),
-            )
-            query = await client.query(_CH_READINESS_QUERY)
-            status["clickhouse"] = query.first_row[0] == 1
+            status["clickhouse"] = await clickhouse.is_ready(ch_client)
         except Exception as exc:
-            queue_logger.warning(
-                "Worker ClickHouse health check failed",
-                error=str(exc),
-            )
+            log.warning("Worker ClickHouse health check failed", error=str(exc))
+        finally:
+            await ch_client.close()
 
+    try:
+        connection = await connect_rabbitmq(queue_conf)
+    except Exception as exc:
+        log.warning("Worker RabbitMQ health check failed", error=str(exc))
+        return status
+
+    try:
+        channel = await connection.channel()
         try:
-            connection = await connect_rabbitmq(queue_conf)
-            channel = await connection.channel()
-            for queue_name in (
-                queue_conf.queue_name,
-                queue_conf.resolved_failed_queue_name,
-            ):
-                await channel.declare_queue(
-                    queue_name,
-                    durable=True,
-                    passive=True,
-                )
+            for queue_name in (queue_conf.queue_name, queue_conf.resolved_failed_queue_name):
+                await channel.declare_queue(queue_name, durable=True, passive=True)
             status["rabbitmq"] = True
-        except Exception as exc:
-            queue_logger.warning(
-                "Worker RabbitMQ health check failed",
-                error=str(exc),
-                queue_name=queue_conf.queue_name,
-                failed_queue_name=queue_conf.resolved_failed_queue_name,
-            )
-    finally:
-        if channel is not None:
+        finally:
             await channel.close()
-        if connection is not None:
-            await connection.close()
-        if client is not None:
-            await client.close()
+    except Exception as exc:
+        log.warning(
+            "Worker RabbitMQ health check failed",
+            error=str(exc),
+            queue_name=queue_conf.queue_name,
+            failed_queue_name=queue_conf.resolved_failed_queue_name,
+        )
+    finally:
+        await connection.close()
 
     return status
 
 
-class SettingsCommands:
-    """Settings related commands.
+def _worker_is_alive(log: Any) -> bool:
+    """Whether the worker liveness file is present and fresh.
 
-    Exposes the pydantic Settings model through Fire. Returning native Python
-    structures keeps output composable (e.g., you can pipe to jq if JSON).
+    The worker rewrites ``WORKER_LIVENESS_PATH`` with the wall-clock time after
+    each flush and on a heartbeat. A missing or stale file means the worker
+    loop has stopped making progress.
     """
+    path = str(WORKER_LIVENESS_PATH)
+    try:
+        content = WORKER_LIVENESS_PATH.read_text()
+    except FileNotFoundError:
+        log.error("Worker liveness file missing", liveness_path=path)
+        return False
+    except OSError as exc:
+        log.error("Failed to read worker liveness file", liveness_path=path, error=str(exc))
+        return False
 
-    def __init__(self) -> None:
-        # Use cached global settings instance
-        self._settings = settings
+    try:
+        last_seen = float(content)
+    except ValueError:
+        log.error(
+            "Worker liveness file contains invalid timestamp",
+            liveness_path=path,
+            content=content,
+        )
+        return False
 
-    def __call__(
-        self,
-        raw: bool = False,
-        indent: int = 2,
-    ) -> Any:  # pragma: no cover - thin wrapper
-        """Print full settings.
+    age_seconds = time.time() - last_seen
+    if age_seconds > WORKER_LIVENESS_STALE_SECONDS:
+        log.error(
+            "Worker liveness file is stale",
+            liveness_path=path,
+            age_seconds=age_seconds,
+            stale_seconds=WORKER_LIVENESS_STALE_SECONDS,
+        )
+        return False
+    return True
 
-        Parameters
-        ----------
-        raw : bool, default False
-                If True, return the raw pydantic Settings object representation.
-                Otherwise output JSON (pretty by default) so it's shell-friendly.
-        indent : int, default 2
-                JSON indentation (ignored when raw=True).
+
+class SettingsCommands:
+    """Inspect the effective settings."""
+
+    def __call__(self, raw: bool = False, indent: int = 2) -> Any:
+        """Print the settings as JSON with secrets masked.
+
+        Args:
+            raw: Return the pydantic Settings object instead of JSON.
+            indent: JSON indentation.
         """
         if raw:
-            return self._settings
-        return orjson.dumps(
-            self._settings.model_dump(mode="json"),
-            indent=indent,
-            sort_keys=True,
-        )
+            return settings
+        return json.dumps(settings.model_dump(mode="json"), indent=indent, sort_keys=True)
 
     def to_dict(self) -> dict[str, Any]:
-        """Return settings as a plain dict (no JSON serialization)."""
-        return self._settings.model_dump(mode="json")
+        """Return the settings as a plain dict."""
+        return settings.model_dump(mode="json")
 
     def hostname(self) -> str:
-        """Convenience accessor for common.hostname (demonstrates attribute path)."""
-        return str(self._settings.common.hostname)
+        """Return ``common.hostname``."""
+        return str(settings.common.hostname)
 
 
 class DBCommands:
-    """Database (ClickHouse) related commands."""
-
-    logger = structlog.get_logger("cli.db")
+    """ClickHouse schema management."""
 
     def init(self) -> str:
-        """Create required ClickHouse databases and tables.
+        """Create the ClickHouse database and tables (idempotent).
 
-        Replaces automatic table creation previously executed during FastAPI lifespan.
+        The app never creates tables on startup, so run this once per
+        deployment and again after schema changes.
         """
+        from evnt.storage.clickhouse import (  # noqa: PLC0415
+            ClickHouseConnector,
+            TableManager,
+        )
+        from evnt.storage.clickhouse import client as clickhouse  # noqa: PLC0415
 
-        async def _run():
-            init_logging(settings.logging.json_format, settings.logging.level)
-            perf_conf = settings.performance
-            ch_conf = settings.clickhouse
-            clickhouse_errors = _clickhouse_errors()
-            clickhouse_connector_cls, table_manager_cls = (
-                _clickhouse_connector_classes()
+        log = structlog.get_logger("cli.db")
+
+        async def run() -> None:
+            ch_client = await clickhouse.create_client(
+                settings.clickhouse,
+                settings.performance.db_pool_size,
             )
-
             try:
-                client = await get_async_client(
-                    **_build_clickhouse_client_kwargs(perf_conf, ch_conf),
+                connector = ClickHouseConnector(
+                    ch_client,
+                    insert_settings=clickhouse.insert_settings(settings.ingest.direct),
+                    **settings.clickhouse.configuration.model_dump(),
                 )
-            except clickhouse_errors as e:  # pragma: no cover - network path
-                self.logger.error("Failed to connect to ClickHouse", error=str(e))
-                raise
-
-            try:
-                connector = clickhouse_connector_cls(
-                    client,
-                    insert_settings=_build_clickhouse_insert_settings(),
-                    **ch_conf.configuration.model_dump(),
-                )
-                table_manager = table_manager_cls(connector)
-                await table_manager.create_all_tables()
-                self.logger.info("ClickHouse initialization complete")
+                await TableManager(connector).create_all_tables()
             finally:
-                await client.close()
+                await ch_client.close()
 
-        asyncio.run(_run())
+        _init_logging()
+        asyncio.run(run())
+        log.info("ClickHouse initialization complete")
         return "ClickHouse initialization complete"
 
 
 class KeysCommands:
     """Key management for the encrypted ingest endpoint."""
-
-    logger = structlog.get_logger("cli.keys")
 
     def generate(self, kid: str = "k1") -> str:
         """Generate an X25519 key pair for encrypted ingest.
@@ -292,7 +201,7 @@ class KeysCommands:
         embedded in the Android, iOS, and web clients.
 
         Args:
-            kid: Key id clients will put in the envelope header
+            kid: Key id clients will put in the envelope header.
         """
         from evnt.crypto import generate_keypair, validate_kid  # noqa: PLC0415
 
@@ -307,29 +216,29 @@ class KeysCommands:
         # /proc/<pid>/environ, `docker inspect`, shell history, and CI logs --
         # and a leaked private key retroactively decrypts every payload ever
         # captured, since there is no forward secrecy on the recipient side.
-        return "\n".join([
-            f"kid:         {kid}",
-            f"public key:  {public_b64}   <- ship this to the clients",
-            f"private key: {private_b64}   <- keep on the collector only",
-            "",
-            "Collector config (preferred -- mount the key as a secret):",
-            f"  umask 077 && printf %s '{private_b64}' > {key_path}",
-            "  EVNT_ENCRYPTION__ENABLED=true",
-            f"  EVNT_ENCRYPTION__KEYS={file_form}",
-            "",
-            "Or inline, if you accept the key being readable in the process",
-            "environment, shell history, and CI logs:",
-            f"  EVNT_ENCRYPTION__KEYS={env_form}",
-        ])
+        return "\n".join(
+            [
+                f"kid:         {kid}",
+                f"public key:  {public_b64}   <- ship this to the clients",
+                f"private key: {private_b64}   <- keep on the collector only",
+                "",
+                "Collector config (preferred -- mount the key as a secret):",
+                f"  umask 077 && printf %s '{private_b64}' > {key_path}",
+                "  EVNT_ENCRYPTION__ENABLED=true",
+                f"  EVNT_ENCRYPTION__KEYS={file_form}",
+                "",
+                "Or inline, if you accept the key being readable in the process",
+                "environment, shell history, and CI logs:",
+                f"  EVNT_ENCRYPTION__KEYS={env_form}",
+            ]
+        )
 
     def public(self, kid: str) -> str:
         """Print the public key for a configured private key.
 
         Args:
-            kid: Key id as configured in EVNT_ENCRYPTION__KEYS
+            kid: Key id as configured in EVNT_ENCRYPTION__KEYS.
         """
-        import base64  # noqa: PLC0415
-
         from evnt.crypto import Keyring  # noqa: PLC0415
 
         keyring = Keyring.from_config(settings.encryption)
@@ -340,13 +249,138 @@ class KeysCommands:
         return base64.b64encode(key_pair.public_key).decode()
 
 
+class ScriptsCommands:
+    """Self-hosted Snowplow JS tracker."""
+
+    def download(
+        self,
+        version: str = DEFAULT_TRACKER_VERSION,
+        output_dir: str | None = None,
+        force: bool = False,
+        create_loader_copy: bool = True,
+    ) -> str:
+        """Download the Snowplow JS tracker bundle and its plugins.
+
+        Args:
+            version: Release tag of snowplow-javascript-tracker.
+            output_dir: Target directory; defaults to ``<common.static_dir>/sp``,
+                which the app serves at ``/static/sp``.
+            force: Download again even if this version is already present.
+            create_loader_copy: Also publish sp.js as loader.js, a name ad
+                blockers do not match on.
+        """
+        log = structlog.get_logger("cli.scripts")
+        base_url = (
+            f"https://github.com/snowplow/snowplow-javascript-tracker/releases/download/{version}"
+        )
+        out_path = Path(output_dir) if output_dir else settings.common.static_dir / "sp"
+        out_path.mkdir(parents=True, exist_ok=True)
+        marker_file = out_path / f"VERSION_{version}"
+        if marker_file.exists() and not force:
+            return f"Scripts already present for version {version}. Use --force to redownload."
+
+        for filename in ("sp.js", "sp.js.map", "plugins.umd.zip"):
+            url = f"{base_url}/{filename}"
+            log.info("Downloading", url=url)
+            response = httpx.get(
+                url,
+                timeout=_SCRIPT_DOWNLOAD_TIMEOUT_SECONDS,
+                follow_redirects=True,
+            )
+            response.raise_for_status()
+            (out_path / filename).write_bytes(response.content)
+
+        zip_path = out_path / "plugins.umd.zip"
+        with ZipFile(BytesIO(zip_path.read_bytes())) as archive:
+            archive.extractall(out_path)
+        zip_path.unlink(missing_ok=True)
+
+        if create_loader_copy:
+            for name in ("sp.js", "sp.js.map"):
+                src = out_path / name
+                if src.exists():
+                    (out_path / name.replace("sp.js", "loader.js")).write_bytes(src.read_bytes())
+            # The copied source map still names sp.js as its file.
+            loader_map = out_path / "loader.js.map"
+            if loader_map.exists():
+                data = orjson.loads(loader_map.read_bytes())
+                data["file"] = "loader.js"
+                loader_map.write_bytes(orjson.dumps(data))
+
+        for old_marker in out_path.glob("VERSION_*"):
+            if old_marker.name != marker_file.name:
+                old_marker.unlink()
+        marker_file.touch(exist_ok=True)
+
+        return f"Downloaded tracker scripts version {version} to {out_path}"
+
+
+class QueueCommands:
+    """RabbitMQ ingest worker."""
+
+    def worker(self) -> str:
+        """Consume the ingest queue and write batches to ClickHouse until SIGTERM."""
+        from evnt.ingest import RabbitMQBatchWorker  # noqa: PLC0415
+        from evnt.storage.clickhouse import ClickHouseConnector  # noqa: PLC0415
+        from evnt.storage.clickhouse import client as clickhouse  # noqa: PLC0415
+
+        log = structlog.get_logger("cli.queue")
+
+        async def run() -> None:
+            ch_client = await clickhouse.connect(
+                settings.clickhouse,
+                settings.performance.db_pool_size,
+                "worker_create",
+            )
+            connector = ClickHouseConnector(
+                ch_client,
+                insert_settings=clickhouse.insert_settings(
+                    settings.ingest.direct,
+                    require_wait=True,
+                ),
+                **settings.clickhouse.configuration.model_dump(),
+            )
+            try:
+                worker = await RabbitMQBatchWorker.create(connector, settings.ingest.rabbitmq)
+            except BaseException:
+                await ch_client.close()
+                raise
+
+            # SIGTERM (docker stop, Kubernetes) cancels the running task, so the
+            # finally block below flushes the batch in hand and closes cleanly.
+            task = asyncio.current_task()
+            assert task is not None
+            asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, task.cancel)
+
+            try:
+                await worker.run()
+            except asyncio.CancelledError:
+                log.info("Worker received shutdown signal, flushing")
+            finally:
+                await worker.close()
+                await ch_client.close()
+
+        _init_logging()
+        asyncio.run(run())
+        return "RabbitMQ worker stopped"
+
+    def healthcheck(self) -> str:
+        """Exit with status 1 unless the worker is alive and its backends answer."""
+        _init_logging()
+        log = structlog.get_logger("cli.queue")
+
+        alive = _worker_is_alive(log)
+        status = asyncio.run(_check_queue_worker_dependencies())
+        if not alive or not all(status.values()):
+            log.error("RabbitMQ worker health check failed", liveness=alive, status=status)
+            raise SystemExit(1)
+        return "ok"
+
+
 class CLI:
-    """Root CLI object.
+    """evnt operational commands."""
 
-    Additional top-level commands can be added as new attributes or methods.
-    """
-
-    def __init__(self) -> None:  # pragma: no cover - trivial wiring
+    def __init__(self) -> None:
         self.settings = SettingsCommands()
         self.db = DBCommands()
         self.queue = QueueCommands()
@@ -354,217 +388,10 @@ class CLI:
         self.keys = KeysCommands()
 
 
-class ScriptsCommands:
-    """Manage static tracker scripts (download/update)."""
-
-    logger = structlog.get_logger("cli.scripts")
-
-    def download(
-        self,
-        version: str = "4.10.2",
-        output_dir: str = "static/sp",
-        force: bool = False,
-        create_loader_copy: bool = True,
-    ) -> str:
-        """Download Snowplow JS tracker bundle and plugins.
-
-        Parameters
-        ----------
-        version : str
-                Release version tag of snowplow-javascript-tracker.
-        output_dir : str
-                Directory to place downloaded artifacts.
-        force : bool
-                Redownload even if version marker exists.
-        create_loader_copy : bool
-                Whether to duplicate sp.js -> loader.js (legacy naming in project).
-        """
-        base_url = f"https://github.com/snowplow/snowplow-javascript-tracker/releases/download/{version}"
-        out_path = Path(output_dir)
-        out_path.mkdir(parents=True, exist_ok=True)
-        marker_file = out_path / f"VERSION_{version}"
-        if marker_file.exists() and not force:
-            result = f"Scripts already present for version {version}. "
-            result += "Use --force to redownload."
-            return result
-
-        files = ["sp.js", "sp.js.map", "plugins.umd.zip"]
-        for filename in files:
-            url = f"{base_url}/{filename}"
-            self.logger.info("Downloading", url=url)
-            resp = httpx.get(
-                url,
-                timeout=_SCRIPT_DOWNLOAD_TIMEOUT_SECONDS,
-                follow_redirects=True,
-            )
-            if resp.status_code != HTTP_200_OK:
-                raise RuntimeError(
-                    f"Failed to download {filename}: HTTP {resp.status_code}",
-                )
-            (out_path / filename).write_bytes(resp.content)
-
-        # Unzip plugins
-        zip_path = out_path / "plugins.umd.zip"
-        with ZipFile(BytesIO(zip_path.read_bytes())) as zf:
-            zf.extractall(out_path)
-        zip_path.unlink(missing_ok=True)
-
-        # Duplicate loader copies if requested
-        if create_loader_copy:
-            for base in ["sp.js", "sp.js.map"]:
-                src = out_path / base
-                if src.exists():
-                    dest = out_path / base.replace("sp.js", "loader.js")
-                    dest.write_bytes(src.read_bytes())
-
-            # Adjust source map file field so it references loader.js
-            loader_map = out_path / "loader.js.map"
-            if loader_map.exists():
-                orig_text = loader_map.read_text(encoding="utf-8")
-                data = orjson.loads(orig_text)
-                data["file"] = "loader.js"
-                updated_text: str = orjson.dumps(data).decode("utf-8")
-                loader_map.write_text(updated_text, encoding="utf-8")
-                self.logger.info("Updated loader.js.map file field to loader.js")
-
-        # Write version marker (empty file used as flag)
-        for old_marker in out_path.glob("VERSION_*"):
-            if old_marker.name != marker_file.name:
-                old_marker.unlink()  # clean previous markers
-        marker_file.touch(exist_ok=True)
-
-        return f"Downloaded tracker scripts version {version} to {out_path}"
+def main() -> None:
+    """Console script entry point."""
+    fire.Fire(CLI(), name="evnt")
 
 
-class QueueCommands:
-    """RabbitMQ queue commands."""
-
-    logger = structlog.get_logger("cli.queue")
-
-    def worker(self) -> str:
-        """Start the RabbitMQ batch worker."""
-
-        async def _run():
-            init_logging(settings.logging.json_format, settings.logging.level)
-            perf_conf = settings.performance
-            ch_conf = settings.clickhouse
-            queue_conf = settings.ingest.rabbitmq
-            clickhouse_connector_cls, _ = _clickhouse_connector_classes()
-            rabbitmq_batch_worker_cls = _rabbitmq_batch_worker()
-            retry_clickhouse_startup = _retry_clickhouse_startup()
-
-            async def _create_ready_client():
-                client = await get_async_client(
-                    **_build_clickhouse_client_kwargs(perf_conf, ch_conf),
-                )
-                try:
-                    query = await client.query(_CH_READINESS_QUERY)
-                    if query.first_row[0] != 1:
-                        raise RuntimeError(
-                            "ClickHouse readiness query returned unexpected result",
-                        )
-                    return client
-                except Exception:
-                    await client.close()
-                    raise
-
-            client = await retry_clickhouse_startup(
-                ch_conf,
-                "worker_create",
-                _create_ready_client,
-            )
-
-            connector = clickhouse_connector_cls(
-                client,
-                insert_settings=_build_clickhouse_insert_settings(require_wait=True),
-                **ch_conf.configuration.model_dump(),
-            )
-            worker = await rabbitmq_batch_worker_cls.create(connector, queue_conf)
-
-            # Install a SIGTERM handler so docker/k8s shutdown cancels the
-            # running task, letting the finally blocks flush and close cleanly.
-            loop = asyncio.get_running_loop()
-            current = asyncio.current_task()
-            loop.add_signal_handler(signal.SIGTERM, current.cancel)
-
-            try:
-                await worker.run()
-            except asyncio.CancelledError:
-                self.logger.info("Worker received shutdown signal, flushing")
-            finally:
-                await worker.close()
-                await client.close()
-
-        asyncio.run(_run())
-        return "RabbitMQ worker stopped"
-
-    def _check_worker_liveness(self) -> bool:
-        """Check whether the worker liveness file is present and fresh.
-
-        The worker rewrites ``WORKER_LIVENESS_PATH`` with the wall-clock time
-        after each successful flush. A missing or stale file means the worker
-        loop is no longer making progress and should be considered dead.
-        """
-
-        try:
-            content = WORKER_LIVENESS_PATH.read_text()
-        except FileNotFoundError:
-            self.logger.error(
-                "Worker liveness file missing",
-                liveness_path=str(WORKER_LIVENESS_PATH),
-            )
-            return False
-        except OSError as exc:
-            self.logger.error(
-                "Failed to read worker liveness file",
-                liveness_path=str(WORKER_LIVENESS_PATH),
-                error=str(exc),
-            )
-            return False
-
-        try:
-            last_seen = float(content)
-        except ValueError:
-            self.logger.error(
-                "Worker liveness file contains invalid timestamp",
-                liveness_path=str(WORKER_LIVENESS_PATH),
-                content=content,
-            )
-            return False
-
-        age_seconds = time.time() - last_seen
-        if age_seconds > WORKER_LIVENESS_STALE_SECONDS:
-            self.logger.error(
-                "Worker liveness file is stale",
-                liveness_path=str(WORKER_LIVENESS_PATH),
-                age_seconds=age_seconds,
-                stale_seconds=WORKER_LIVENESS_STALE_SECONDS,
-            )
-            return False
-
-        return True
-
-    def healthcheck(self) -> str:
-        """Check whether the RabbitMQ worker is alive and its deps are healthy."""
-
-        init_logging(settings.logging.json_format, settings.logging.level)
-
-        is_alive = self._check_worker_liveness()
-        status = asyncio.run(_check_queue_worker_dependencies())
-        if not is_alive or not all(status.values()):
-            self.logger.error(
-                "RabbitMQ worker health check failed",
-                liveness=is_alive,
-                status=status,
-            )
-            raise SystemExit(1)
-
-        return "ok"
-
-
-def main() -> None:  # pragma: no cover - Fire dispatch
-    fire.Fire(CLI())
-
-
-if __name__ == "__main__":  # pragma: no cover
+if __name__ == "__main__":
     main()

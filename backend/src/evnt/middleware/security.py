@@ -1,54 +1,38 @@
-"""
-Security headers middleware for evnt.
+"""Security headers on every response.
 
-Adds security-related HTTP headers to all responses.
+Raw ASGI rather than ``BaseHTTPMiddleware``: the headers only need to be added
+to ``http.response.start``, and the collector endpoints are hot enough that the
+extra task and body buffering ``BaseHTTPMiddleware`` adds per request matter.
 """
+
+from starlette.datastructures import MutableHeaders
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from evnt.config import settings
 from evnt.constants import HSTS_HEADER, SECURITY_HEADERS
-from fastapi import Request, Response
-
-from evnt.middleware.base import BaseMiddleware
 
 
-class SecurityHeadersMiddleware(BaseMiddleware):
-    """
-    Middleware that adds security headers to all responses.
+class SecurityHeadersMiddleware:
+    """Add ``SECURITY_HEADERS`` to every HTTP response, plus HSTS behind HTTPS."""
 
-    Headers include:
-    - X-Content-Type-Options: Prevent MIME sniffing
-    - X-Frame-Options: Prevent clickjacking
-    - X-XSS-Protection: Enable XSS filter
-    - Referrer-Policy: Control referrer information
-    - Permissions-Policy: Restrict browser features
-    - Strict-Transport-Security: Enforce HTTPS (when enabled)
-    """
-
-    def __init__(self, app):
-        super().__init__(app)
-        # Read security settings at init time (not import time) for testability
-        self._security_config = settings.security
-        # Build headers dict once at initialization
-        self._headers = self._build_headers()
-
-    def _build_headers(self) -> dict[str, str]:
-        """Build the security headers dictionary."""
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
         headers = dict(SECURITY_HEADERS)
-
-        # Add HSTS header if HTTPS redirect is enabled
-        if self._security_config.enable_https_redirect:
+        # HSTS only makes sense once the deployment is committed to HTTPS.
+        if settings.security.enable_https_redirect:
             headers["Strict-Transport-Security"] = HSTS_HEADER
+        self.headers = headers
 
-        return headers
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
 
-    async def process_response(
-        self,
-        request: Request,
-        response: Response,
-    ) -> Response:
-        """Add security headers to the response."""
-        for header_name, header_value in self._headers.items():
-            if header_value:  # Only set non-empty headers
-                response.headers[header_name] = header_value
+        async def send_with_headers(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                response_headers = MutableHeaders(scope=message)
+                for name, value in self.headers.items():
+                    response_headers[name] = value
+            await send(message)
 
-        return response
+        await self.app(scope, receive, send_with_headers)

@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+
 from evnt.tracker import useragent as useragent_module
 
 
@@ -88,10 +89,8 @@ def test_parse_agent_for_insert_reuses_cached_instance(monkeypatch):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_parse_agent_for_insert_async_offloads_only_cache_miss(
     monkeypatch,
-    anyio_backend,
 ):
     user_agent = "Mozilla/5.0"
     thread_calls = []

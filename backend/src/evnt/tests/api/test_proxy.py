@@ -72,7 +72,6 @@ async def _read_streaming_response(response):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_proxy_awaits_async_request(anyio_backend):
     event = asyncio.Event()
     requested_urls: list[str] = []
@@ -93,7 +92,6 @@ async def test_proxy_awaits_async_request(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_proxy_allows_configured_port_on_allowed_hostname(anyio_backend):
     event = asyncio.Event()
     requested_urls: list[str] = []
@@ -113,7 +111,6 @@ async def test_proxy_allows_configured_port_on_allowed_hostname(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_proxy_rejects_port_not_in_allowlist(anyio_backend):
     event = asyncio.Event()
     proxy_client = _DummyProxyClient(event)
@@ -132,7 +129,6 @@ async def test_proxy_rejects_port_not_in_allowlist(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_proxy_rejects_authority_with_allowed_userinfo_but_disallowed_host(
     anyio_backend,
 ):
@@ -153,7 +149,6 @@ async def test_proxy_rejects_authority_with_allowed_userinfo_but_disallowed_host
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_proxy_reuses_request_scoped_lifespan_client(anyio_backend):
     event = asyncio.Event()
     requested_urls: list[str] = []

@@ -4,11 +4,11 @@ from ipaddress import IPv4Address
 
 import pytest
 
-from evnt.tracker.processing import process_data
 from evnt.tracker.models import (
     PayloadElementModel,
     UserAgentModel,
 )
+from evnt.tracker.processing import process_data
 
 
 class _RecordingLogger:
@@ -27,10 +27,8 @@ class _RecordingLogger:
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_process_data_logs_iglu_warning_but_returns_row(
     monkeypatch,
-    anyio_backend,
 ):
     logger = _RecordingLogger()
     runtime_payload_module = importlib.import_module("evnt.tracker.payload")
@@ -71,8 +69,7 @@ async def test_process_data_logs_iglu_warning_but_returns_row(
     assert len(rows) == 1
     assert rows[0]["aid"] == "example-app"
     assert any(
-        args[0] == "Iglu validation warning"
-        and kwargs["validation_stage"] == "contexts"
+        args[0] == "Iglu validation warning" and kwargs["validation_stage"] == "contexts"
         for args, kwargs in logger.warnings
     )
 

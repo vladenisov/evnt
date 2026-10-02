@@ -13,15 +13,16 @@ from uuid import UUID
 
 import orjson
 import structlog
+
 from evnt.config import settings
 from evnt.observability.tracing import async_capture_span, capture_span
+from evnt.tracker.iglu import ValidationResult, validate_iglu_payload
 from evnt.tracker.models import (
     InsertModel,
     PayloadElementModel,
     StructuredEvent,
     UserAgentModel,
 )
-from evnt.tracker.iglu import ValidationResult, validate_iglu_payload
 from evnt.tracker.utils import parse_base64
 
 logger = structlog.stdlib.get_logger()
@@ -81,7 +82,8 @@ _MUTABLE_USER_AGENT_FIELDS = (
 # partially constructed PayloadElementModel still gets fresh UUID/timestamps.
 _INSERT_MODEL_DEFAULTS = {
     field_name: value
-    for field_name, value in InsertModel.model_construct().__dict__.items()
+    # Constructed bare on purpose: only the defaults are wanted here.
+    for field_name, value in InsertModel.model_construct().__dict__.items()  # type: ignore[call-arg]
     if InsertModel.model_fields[field_name].default_factory is None
 }
 _MUTABLE_INSERT_DEFAULT_FIELDS = tuple(

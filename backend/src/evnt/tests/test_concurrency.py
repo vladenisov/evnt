@@ -3,12 +3,12 @@
 import asyncio
 
 import pytest
+
 from evnt import concurrency
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
-async def test_run_cpu_task_bounds_submitted_work(monkeypatch, anyio_backend):
+async def test_run_cpu_task_bounds_submitted_work(monkeypatch):
     release = asyncio.Event()
     saturated = asyncio.Event()
     submitted = 0
@@ -42,10 +42,8 @@ async def test_run_cpu_task_bounds_submitted_work(monkeypatch, anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_run_cpu_task_semaphore_uses_configured_concurrency(
     monkeypatch,
-    anyio_backend,
 ):
     monkeypatch.setattr(concurrency, "_cpu_task_slots", {})
     monkeypatch.setattr(concurrency.settings.performance, "cpu_task_concurrency", 3)
@@ -59,10 +57,8 @@ async def test_run_cpu_task_semaphore_uses_configured_concurrency(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_run_cpu_task_rebinds_after_the_owning_loop_is_gone(
     monkeypatch,
-    anyio_backend,
 ):
     """A semaphore left over from a closed loop must not leak into a new one."""
 

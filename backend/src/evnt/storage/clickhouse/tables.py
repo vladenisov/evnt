@@ -3,6 +3,7 @@ Table management operations for ClickHouse databases.
 """
 
 import structlog
+
 from evnt.storage.clickhouse.connector import ClickHouseConnector
 from evnt.storage.clickhouse.schema import get_fields_for_table_group
 
@@ -42,8 +43,7 @@ class TableManager:
 
         for db in databases:
             await self.connector.command(
-                f"CREATE DATABASE IF NOT EXISTS {db} "
-                f"{self.connector.cluster_condition}",
+                f"CREATE DATABASE IF NOT EXISTS {db} {self.connector.cluster_condition}",
             )
             logger.info(f"Created database: {db}")
 
@@ -89,9 +89,7 @@ class TableManager:
         table_data = self.connector.tables[table_group]["distributed"]
 
         if "." in self.connector.tables[table_group]["local"]["name"]:
-            source_db, source_table = self.connector.tables[table_group]["local"][
-                "name"
-            ].split(".")
+            source_db, source_table = self.connector.tables[table_group]["local"]["name"].split(".")
         else:
             source_db = self.connector.database
             source_table = self.connector.tables[table_group]["local"]["name"]
@@ -127,8 +125,5 @@ class TableManager:
 
             await self.create_local_table(table_group)
 
-            if (
-                self.connector.cluster
-                and "distributed" in self.connector.tables[table_group]
-            ):
+            if self.connector.cluster and "distributed" in self.connector.tables[table_group]:
                 await self.create_distributed_table(table_group)

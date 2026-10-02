@@ -1,9 +1,10 @@
 import importlib
 from contextlib import asynccontextmanager
 
-from evnt.config import SecurityConfig
-from fastapi_structlog.middleware import AccessLogMiddleware
 from fastapi.testclient import TestClient
+from fastapi_structlog.middleware import AccessLogMiddleware
+
+from evnt.config import SecurityConfig
 
 
 def _reload_main_module():
@@ -104,8 +105,7 @@ def test_base_middleware_can_disable_access_log_and_brotli(monkeypatch):
     ]
 
     assert not any(
-        issubclass(middleware_class, AccessLogMiddleware)
-        for middleware_class in middleware_classes
+        issubclass(middleware_class, AccessLogMiddleware) for middleware_class in middleware_classes
     )
     assert main_module.BrotliMiddleware not in middleware_classes
 
@@ -128,13 +128,9 @@ def test_base_middleware_passes_expensive_middleware_exclusions(monkeypatch):
 
     middleware = main_module._base_middleware(main_module.settings)
     access_log = next(
-        item
-        for item in middleware
-        if item.cls is main_module.PathSkippingAccessLogMiddleware
+        item for item in middleware if item.cls is main_module.PathSkippingAccessLogMiddleware
     )
-    brotli = next(
-        item for item in middleware if item.cls is main_module.BrotliMiddleware
-    )
+    brotli = next(item for item in middleware if item.cls is main_module.BrotliMiddleware)
 
     assert access_log.kwargs["excluded_paths"] == excluded_paths
     assert brotli.kwargs["excluded_handlers"] == excluded_paths

@@ -1,8 +1,4 @@
-"""
-ClickHouse database connector for evnt.
-
-This module provides a connection to ClickHouse.
-"""
+"""Row sink that writes event batches to ClickHouse."""
 
 from __future__ import annotations
 
@@ -12,12 +8,14 @@ from uuid import UUID
 
 import structlog
 from clickhouse_connect.driver.exceptions import ClickHouseError, DatabaseError
-from evnt.constants import CLICKHOUSE_ASYNC_SETTINGS
+
+from evnt.constants import CLICKHOUSE_ASYNC_SETTINGS, DEFAULT_TABLE_GROUP
 from evnt.observability.tracing import async_capture_span
-from evnt.storage.clickhouse.schema import ColumnDef, TupleColumnDef
+from evnt.storage.clickhouse.schema import ColumnDef, TupleColumnDef, get_fields_for_table_group
 
 if TYPE_CHECKING:
     from clickhouse_connect.driver.asyncclient import AsyncClient
+    from clickhouse_connect.driver.query import QueryResult
 
 logger = structlog.get_logger(__name__)
 
@@ -36,34 +34,38 @@ class _InsertBatchMetadata:
 
 
 class ClickHouseConnector:
-    """
-    ClickHouse database connector.
+    """Writes event rows to ClickHouse and runs DDL for ``TableManager``.
+
+    The keyword arguments match ``ClickHouseConfiguration``, so callers pass
+    ``**settings.clickhouse.configuration.model_dump()``.
     """
 
     def __init__(
         self,
         conn: AsyncClient,
-        cluster_name: str | None = None,
+        *,
+        tables: dict[str, Any],
         database: str = "evnt",
+        cluster_name: str | None = None,
         insert_settings: dict[str, int] | None = None,
-        **params,
-    ):
+    ) -> None:
         """
-        Initialize the ClickHouse connector.
-
         Args:
-            conn: The ClickHouse connection
-            cluster_name: Optional cluster name for distributed tables
-            database: Default database name
-            **params: Additional parameters
+            conn: Open async ClickHouse client; the caller owns closing it.
+            tables: Table-group definitions (``ClickHouseConfiguration.tables``).
+            database: Database the tables live in.
+            cluster_name: Cluster for ``ON CLUSTER`` DDL and Distributed tables.
+            insert_settings: Settings sent with every insert. ``None`` means
+                async inserts; an empty dict means plain synchronous inserts.
         """
         self.conn = conn
         self.cluster = cluster_name
         self.cluster_condition = self._make_on_cluster(cluster_name)
         self.database = database
-        self.params = params
-        self.tables = self.params["tables"]
-        self.insert_settings = insert_settings or CLICKHOUSE_ASYNC_SETTINGS.copy()
+        self.tables = tables
+        self.insert_settings = (
+            dict(CLICKHOUSE_ASYNC_SETTINGS) if insert_settings is None else insert_settings
+        )
         self._insert_metadata_cache: dict[str, _InsertBatchMetadata] = {}
 
     @staticmethod
@@ -112,7 +114,7 @@ class ClickHouseConnector:
         self,
         query: str,
         parameters: dict[str, Any] | None = None,
-    ):
+    ) -> QueryResult:
         """
         Execute a ClickHouse query.
 
@@ -124,7 +126,8 @@ class ClickHouseConnector:
             The query results
         """
         try:
-            return await self.conn.query(query, parameters=parameters)
+            result: QueryResult = await self.conn.query(query, parameters=parameters)
+            return result
         except (ClickHouseError, DatabaseError) as e:
             logger.error(
                 "Database query failed",
@@ -134,7 +137,7 @@ class ClickHouseConnector:
             )
             raise
 
-    async def get_table_name(self, table_group: str = "evnt") -> str:
+    async def get_table_name(self, table_group: str = DEFAULT_TABLE_GROUP) -> str:
         """
         Get the table name for a specific group.
 
@@ -144,10 +147,8 @@ class ClickHouseConnector:
         Returns:
             The table name
         """
-        table_name = self.tables[table_group]["local"]["name"]
-        if self.cluster:
-            table_name = self.tables[table_group]["distributed"]["name"]
-        return table_name
+        kind = "distributed" if self.cluster else "local"
+        return str(self.tables[table_group][kind]["name"])
 
     async def _get_insert_metadata(
         self,
@@ -157,8 +158,6 @@ class ClickHouseConnector:
 
         if table_group in self._insert_metadata_cache:
             return self._insert_metadata_cache[table_group]
-
-        from evnt.storage.clickhouse.schema import get_fields_for_table_group
 
         table_name = await self.get_table_name(table_group)
         full_table_name = await self.get_full_table_name(table_name)
@@ -181,7 +180,7 @@ class ClickHouseConnector:
     async def insert_rows(
         self,
         rows: list[dict[str, Any]],
-        table_group: str = "evnt",
+        table_group: str = DEFAULT_TABLE_GROUP,
     ) -> None:
         """
         Insert rows into the specified table group in a single batch request.
@@ -220,7 +219,7 @@ class ClickHouseConnector:
     async def insert_batch(
         self,
         rows: list[dict[str, Any]],
-        table_group: str = "evnt",
+        table_group: str = DEFAULT_TABLE_GROUP,
     ) -> None:
         """Insert a batch of rows in a single ClickHouse request."""
 
@@ -229,10 +228,10 @@ class ClickHouseConnector:
             return
 
         metadata = await self._get_insert_metadata(table_group)
-        data = []
+        data: list[list[Any]] = []
 
         for row in rows:
-            values = []
+            values: list[Any] = []
             for field in metadata.fields:
                 if isinstance(field, TupleColumnDef):
                     value = tuple(
@@ -244,6 +243,8 @@ class ClickHouseConnector:
                         if v.payload_name is not None
                     )
                 else:
+                    # Only fields with a payload name are in metadata.fields.
+                    assert field.payload_name is not None
                     value = self._sanitize_clickhouse_value(
                         field.type_name,
                         row.get(field.payload_name),

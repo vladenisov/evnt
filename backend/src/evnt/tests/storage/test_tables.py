@@ -8,8 +8,8 @@ EXISTS, column expressions, database dedup, distributed source resolution).
 """
 
 import pytest
-from evnt.storage.clickhouse.schema import register_fields
-from evnt.storage.clickhouse.schema import STRING, ColumnDef
+
+from evnt.storage.clickhouse.schema import STRING, ColumnDef, register_fields
 from evnt.storage.clickhouse.tables import TableManager
 
 
@@ -57,7 +57,6 @@ def _register_two_string_fields():
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_create_database_emits_if_not_exists_with_on_cluster(anyio_backend):
     connector = _FakeConnector(
         cluster="prod_cluster",
@@ -73,7 +72,6 @@ async def test_create_database_emits_if_not_exists_with_on_cluster(anyio_backend
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_create_database_without_cluster_has_no_on_cluster_clause(anyio_backend):
     connector = _FakeConnector(
         cluster=None,
@@ -88,7 +86,6 @@ async def test_create_database_without_cluster_has_no_on_cluster_clause(anyio_ba
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_create_database_collects_qualified_table_dbs_and_dedups(anyio_backend):
     """Group key + every ``db.table`` qualified name produce one CREATE each."""
 
@@ -107,16 +104,13 @@ async def test_create_database_collects_qualified_table_dbs_and_dedups(anyio_bac
 
     await manager.create_database()
 
-    created_dbs = sorted(
-        cmd.split("IF NOT EXISTS ")[1].split(" ")[0] for cmd in connector.commands
-    )
+    created_dbs = sorted(cmd.split("IF NOT EXISTS ")[1].split(" ")[0] for cmd in connector.commands)
     # "evnt" (group key) and "analytics" (from the qualified table names), deduped.
     assert created_dbs == ["analytics", "evnt"]
     assert len(connector.commands) == 2
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_create_local_table_emits_full_ddl_with_columns(anyio_backend):
     connector = _FakeConnector(
         cluster="prod_cluster",
@@ -141,7 +135,6 @@ async def test_create_local_table_emits_full_ddl_with_columns(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_create_local_table_qualified_name_is_not_reprefixed(anyio_backend):
     connector = _FakeConnector(
         cluster=None,
@@ -158,7 +151,6 @@ async def test_create_local_table_qualified_name_is_not_reprefixed(anyio_backend
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_create_distributed_table_uses_local_as_source(anyio_backend):
     connector = _FakeConnector(
         cluster="prod_cluster",
@@ -182,7 +174,6 @@ async def test_create_distributed_table_uses_local_as_source(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_create_distributed_table_splits_qualified_local_source(anyio_backend):
     connector = _FakeConnector(
         cluster="prod_cluster",
@@ -204,7 +195,6 @@ async def test_create_distributed_table_splits_qualified_local_source(anyio_back
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_create_distributed_table_noop_without_cluster(anyio_backend):
     connector = _FakeConnector(
         cluster=None,
@@ -223,7 +213,6 @@ async def test_create_distributed_table_noop_without_cluster(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_create_all_tables_creates_db_then_local_and_distributed(anyio_backend):
     connector = _FakeConnector(
         cluster="prod_cluster",
@@ -245,7 +234,6 @@ async def test_create_all_tables_creates_db_then_local_and_distributed(anyio_bac
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_create_all_tables_skips_disabled_and_no_local(anyio_backend):
     connector = _FakeConnector(
         cluster=None,
@@ -267,7 +255,6 @@ async def test_create_all_tables_skips_disabled_and_no_local(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_create_all_tables_without_cluster_skips_distributed(anyio_backend):
     connector = _FakeConnector(
         cluster=None,

@@ -14,11 +14,12 @@ import subprocess
 import textwrap
 
 import pytest
+from fastapi.testclient import TestClient
+
+from evnt.api.deps import get_db_connector
 from evnt.config import EncryptionKeyConfig, settings
 from evnt.constants import CONTENT_TYPE_OCTET_STREAM
 from evnt.crypto import Keyring, generate_keypair
-from evnt.api.deps import get_db_connector
-from fastapi.testclient import TestClient
 from evnt.tests.support import build_app, minimal_tp2_payload
 
 SCRIPT_ENDPOINT = "/e.js"
@@ -115,10 +116,7 @@ def keys(monkeypatch) -> list[str]:
     monkeypatch.setattr(
         settings.encryption,
         "keys",
-        [
-            EncryptionKeyConfig(kid=kid, private_key=generate_keypair()[0])
-            for kid in kids
-        ],
+        [EncryptionKeyConfig(kid=kid, private_key=generate_keypair()[0]) for kid in kids],
     )
     return kids
 
@@ -133,7 +131,11 @@ def client(monkeypatch, keys, connector) -> TestClient:
 
 
 def _run_node(
-    tmp_path, harness: str, script: str, *args: str, env: dict | None = None,
+    tmp_path,
+    harness: str,
+    script: str,
+    *args: str,
+    env: dict | None = None,
 ) -> dict:
     """Run one of the Node harnesses against the served script."""
     script_path = tmp_path / "seal.js"
@@ -211,7 +213,9 @@ class TestNodeInterop:
 
         with client:
             sealed = _seal_with_node(
-                tmp_path, client.get(SCRIPT_ENDPOINT).text, payload,
+                tmp_path,
+                client.get(SCRIPT_ENDPOINT).text,
+                payload,
             )
             response = client.post(
                 ENDPOINT,

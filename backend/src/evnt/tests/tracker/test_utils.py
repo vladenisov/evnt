@@ -1,6 +1,5 @@
 from evnt.tracker import utils as utils_module
 
-
 find_available = utils_module.find_available
 
 

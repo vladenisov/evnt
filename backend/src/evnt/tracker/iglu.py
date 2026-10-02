@@ -10,9 +10,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-from evnt.config import settings
 from jsonschema import Draft4Validator
 from jsonschema.exceptions import SchemaError, ValidationError
+
+from evnt.config import settings
 
 IGLU_URI_RE = re.compile(
     r"^iglu:(?P<vendor>[A-Za-z0-9-_.]+)/"
@@ -60,13 +61,10 @@ def _format_validation_error(error: ValidationError) -> str:
 
     location = "$"
     for part in error.absolute_path:
-        if isinstance(part, int):
-            location = f"{location}[{part}]"
-        else:
-            location = f"{location}.{part}"
+        location += f"[{part}]" if isinstance(part, int) else f".{part}"
 
     if location == "$":
-        return error.message
+        return str(error.message)
     return f"{error.message} at {location}"
 
 

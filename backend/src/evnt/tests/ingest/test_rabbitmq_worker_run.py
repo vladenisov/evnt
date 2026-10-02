@@ -1,6 +1,7 @@
 import asyncio
 
 import pytest
+
 from evnt.config import RabbitMQConfig
 from evnt.ingest import rabbitmq as rabbitmq_module
 from evnt.ingest.rabbitmq import QueuedInsertPayload, RabbitMQBatchWorker
@@ -97,7 +98,6 @@ class _Sink:
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_run_does_not_cancel_queue_iterator_on_flush_timeout(anyio_backend):
     message = _FakeMessage(QueuedInsertPayload(rows=[{"id": 1}]))
     iterator = _Iterator(message)
@@ -129,10 +129,8 @@ async def test_run_does_not_cancel_queue_iterator_on_flush_timeout(anyio_backend
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_run_applies_backoff_once_per_failure_level(
     monkeypatch,
-    anyio_backend,
 ):
     messages = [
         _FakeMessage(QueuedInsertPayload(rows=[{"id": 1}])),

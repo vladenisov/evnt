@@ -55,6 +55,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
 import structlog
+
 from evnt.constants import (
     AES_GCM_NONCE_SIZE,
     AES_GCM_TAG_SIZE,
@@ -88,7 +89,7 @@ except ImportError:  # pragma: no cover - exercised only without the extra
     # Mirrors the name cryptography exports, so the error tuples below stay
     # importable without the extra; N818 does not apply to a stand-in for a
     # third-party class whose name we do not control.
-    class UnsupportedAlgorithm(Exception):  # noqa: N818
+    class UnsupportedAlgorithm(Exception):  # type: ignore[no-redef]  # noqa: N818
         """Placeholder for the real class when the `crypto` extra is absent."""
 
 
@@ -594,12 +595,7 @@ def seal_envelope(
 
     kid_bytes = kid.encode("ascii")
     flags = ENVELOPE_FLAG_GZIP if compress else 0
-    header = (
-        ENVELOPE_MAGIC
-        + bytes((ENVELOPE_VERSION, flags, len(kid_bytes)))
-        + kid_bytes
-        + epk
-    )
+    header = ENVELOPE_MAGIC + bytes((ENVELOPE_VERSION, flags, len(kid_bytes))) + kid_bytes + epk
     nonce = os.urandom(AES_GCM_NONCE_SIZE)
     return header + nonce + AESGCM(key).encrypt(nonce, plaintext, header)
 

@@ -10,6 +10,7 @@ Covers four behavior-preserving fixes:
 from uuid import UUID
 
 import pytest
+
 from evnt.config import ClickHouseConfiguration
 from evnt.storage.clickhouse.connector import ClickHouseConnector
 from evnt.storage.clickhouse.schema import (
@@ -75,10 +76,7 @@ def test_sanitize_uuid_none_becomes_zero_uuid():
 
 def test_sanitize_string_none_becomes_empty():
     assert ClickHouseConnector._sanitize_clickhouse_value("String", None) == ""
-    assert (
-        ClickHouseConnector._sanitize_clickhouse_value("LowCardinality(String)", None)
-        == ""
-    )
+    assert ClickHouseConnector._sanitize_clickhouse_value("LowCardinality(String)", None) == ""
 
 
 def test_sanitize_preserves_non_none_and_other_types():
@@ -100,13 +98,10 @@ def test_configuration_accepts_valid_identifiers_and_empty_cluster():
     cfg = ClickHouseConfiguration(database="my_db", cluster_name="")
     assert cfg.database == "my_db"
     assert cfg.cluster_name == ""
-    assert ClickHouseConfiguration(cluster_name="prod_cluster").cluster_name == (
-        "prod_cluster"
-    )
+    assert ClickHouseConfiguration(cluster_name="prod_cluster").cluster_name == ("prod_cluster")
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_create_database_tolerates_non_dict_group(anyio_backend):
     # A malformed non-dict group value must be skipped, not crash with
     # AttributeError ('str' object has no attribute 'values').

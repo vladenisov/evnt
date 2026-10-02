@@ -29,7 +29,9 @@ def _cpu_task_semaphore() -> asyncio.Semaphore:
 
 
 async def run_cpu_task[**P, T](
-    function: Callable[P, T], *args: P.args, **kwargs: P.kwargs,
+    function: Callable[P, T],
+    *args: P.args,
+    **kwargs: P.kwargs,
 ) -> T:
     """Run synchronous CPU work without growing the executor queue unboundedly."""
 

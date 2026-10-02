@@ -1,9 +1,11 @@
 """Utility helpers for decoding Snowplow tracker payloads."""
 
 import base64
+from typing import Any, cast
 
 import orjson
 import structlog
+
 from evnt.observability.tracing import capture_span
 
 logger = structlog.get_logger(__name__)
@@ -36,15 +38,15 @@ def parse_base64(data: str | bytes) -> str:
 
 
 def find_available(
-    unencoded: str | dict | None,
-    encoded: str | dict | None,
-) -> dict | None:
+    unencoded: str | dict[str, Any] | None,
+    encoded: str | None,
+) -> dict[str, Any] | None:
     """Return the first available payload as a dict, decoding base64 if needed.
 
     Prefers ``unencoded`` over ``encoded``. Returns ``None`` when neither
     yields a valid JSON object.
     """
-    result = None
+    result: str | dict[str, Any] | None = None
 
     if unencoded:
         result = unencoded
@@ -68,7 +70,7 @@ def find_available(
         return None
 
     if isinstance(parsed, dict):
-        return parsed
+        return cast(dict[str, Any], parsed)
 
     logger.warning(
         "Snowplow JSON payload has unexpected type",

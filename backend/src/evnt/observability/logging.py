@@ -1,9 +1,4 @@
-"""Logging integration using fastapi-structlog.
-
-This replaces the previous custom Structlog configuration with the
-`fastapi-structlog` helper utilities so we can rely on its battle-tested
-middleware, processors and optional destinations (console / JSON / file / syslog / DB).
-"""
+"""structlog setup (via fastapi-structlog) and the request validation error handler."""
 
 import structlog
 from fastapi import Request, status
@@ -64,8 +59,9 @@ def _get_body_length(body: object) -> int | None:
     return len(str(body).encode("utf-8", errors="ignore"))
 
 
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """Unified validation error handler using the configured structlog logger."""
+async def validation_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Log a request that failed validation and answer 422 with the details."""
+    assert isinstance(exc, RequestValidationError)
     content_length = _parse_content_length(request.headers.get("content-length"))
     body_length = _get_body_length(exc.body)
 
@@ -83,6 +79,6 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     logger = structlog.get_logger()
     logger.error("Validation error", **error_data)
     return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         content=jsonable_encoder(error_data),
     )

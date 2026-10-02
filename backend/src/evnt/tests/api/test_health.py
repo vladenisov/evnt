@@ -9,6 +9,7 @@ branches, plus ``ClickHouseHealthChecker.check`` success and failure.
 from types import SimpleNamespace
 
 import pytest
+
 from evnt.api.health import liveness, probe
 from evnt.health import ClickHouseHealthChecker
 
@@ -42,7 +43,6 @@ def _request(checker, ingest_mode="clickhouse", connector=None):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_liveness_does_not_check_dependencies(anyio_backend):
     response = await liveness()
 
@@ -51,7 +51,6 @@ async def test_liveness_does_not_check_dependencies(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_probe_healthy_returns_200_with_table(anyio_backend):
     request = _request(_FakeChecker({"clickhouse": True}))
 
@@ -64,7 +63,6 @@ async def test_probe_healthy_returns_200_with_table(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_probe_unhealthy_returns_502(anyio_backend):
     request = _request(_FakeChecker({"clickhouse": False}))
 
@@ -77,7 +75,6 @@ async def test_probe_unhealthy_returns_502(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_probe_healthy_but_table_lookup_fails_omits_table(anyio_backend):
     request = _request(
         _FakeChecker({"clickhouse": True}),
@@ -92,7 +89,6 @@ async def test_probe_healthy_but_table_lookup_fails_omits_table(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_clickhouse_checker_reports_healthy_on_select_one(anyio_backend):
     class _Client:
         async def query(self, sql):
@@ -105,7 +101,6 @@ async def test_clickhouse_checker_reports_healthy_on_select_one(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_clickhouse_checker_reports_unhealthy_on_error(anyio_backend):
     class _Client:
         async def query(self, sql):

@@ -10,11 +10,12 @@ import base64
 
 import orjson
 import pytest
+from fastapi.testclient import TestClient
+
+from evnt.api.deps import get_db_connector
 from evnt.config import EncryptionKeyConfig, settings
 from evnt.constants import CONTENT_TYPE_GIF, CONTENT_TYPE_OCTET_STREAM, TRACKING_PIXEL
 from evnt.crypto import Keyring, generate_keypair, seal_envelope
-from evnt.api.deps import get_db_connector
-from fastapi.testclient import TestClient
 from evnt.tests.support import build_app, minimal_tp2_payload
 
 ENDPOINT = "/e"
@@ -101,9 +102,7 @@ class TestPost:
 
     def test_empty_batch_inserts_no_rows(self, client, connector, public_key):
         payload = {
-            "schema": (
-                "iglu:com.snowplowanalytics.snowplow/payload_data/jsonschema/1-0-4"
-            ),
+            "schema": ("iglu:com.snowplowanalytics.snowplow/payload_data/jsonschema/1-0-4"),
             "data": [],
         }
         with client:

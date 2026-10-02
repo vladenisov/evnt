@@ -11,6 +11,7 @@ import types
 from contextlib import suppress
 
 import pytest
+
 from evnt.constants import WORKER_HEARTBEAT_SECONDS, WORKER_LIVENESS_STALE_SECONDS
 from evnt.ingest import rabbitmq as rabbitmq_module
 from evnt.ingest.rabbitmq import RabbitMQBatchWorker
@@ -43,7 +44,6 @@ def test_mark_alive_replaces_liveness_file_atomically(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_heartbeat_loop_marks_alive_immediately(anyio_backend):
     # The loop writes liveness before its first sleep, so the file is fresh as
     # soon as the worker starts, regardless of the configured batch timeout.

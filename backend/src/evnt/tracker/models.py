@@ -1,6 +1,4 @@
-"""
-Data models for Snowplow events.
-"""
+"""Pydantic models for the Snowplow tracker protocol and the stored event row."""
 
 import urllib.parse as urlparse
 from datetime import UTC, datetime
@@ -9,19 +7,15 @@ from ipaddress import IPv4Address
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from evnt.config import settings
 from pydantic import (
     AliasChoices,
+    BaseModel,
     Field,
     computed_field,
     field_validator,
 )
+
 from evnt.tracker.utils import find_available
-
-from evnt.tracker.json_model import Model
-
-schemas = settings.common.snowplow.schemas
-
 
 DEFAULT_UUID = UUID("00000000-0000-0000-0000-000000000000")
 DEFAULT_DATE = datetime(1970, 1, 1, tzinfo=UTC)
@@ -29,7 +23,7 @@ DEFAULT_DATE = datetime(1970, 1, 1, tzinfo=UTC)
 _utcnow = partial(datetime.now, UTC)
 
 
-class SnowPlowModel(Model):
+class SnowPlowModel(BaseModel):
     """Base model for Snowplow data."""
 
     # ``data`` is intentionally ``list[Any]`` only on this abstract base: the
@@ -44,7 +38,7 @@ class SnowPlowModel(Model):
     )
 
 
-class StructuredEvent(Model):
+class StructuredEvent(BaseModel):
     """Model for structured events."""
 
     se_ac: str = Field(
@@ -65,7 +59,7 @@ class StructuredEvent(Model):
         description="Only for event_type = se",
         validation_alias=AliasChoices("se_la", "label"),
     )
-    se_pr: str | dict = Field(
+    se_pr: str | dict[str, Any] = Field(
         "",
         title="Event property",
         description="Only for event_type = se",
@@ -79,7 +73,7 @@ class StructuredEvent(Model):
     )
 
 
-class Validation(Model):
+class Validation(BaseModel):
     aid: str = Field(..., title="Unique identifier for website / application")
     # URL and referrer fields
     url: str = Field("", title="Page URL")
@@ -87,18 +81,18 @@ class Validation(Model):
 
     @field_validator("aid", mode="before")
     @classmethod
-    def rename_aid(cls, v):
+    def rename_aid(cls, v: Any) -> Any:
         if v == "undefined":
             return "other"
         return v
 
     @field_validator("refr", "url", mode="before")
     @classmethod
-    def decode_url_fields(cls, v):
+    def decode_url_fields(cls, v: Any) -> Any:
         return urlparse.unquote(v) if v else v
 
 
-class Base(Model):
+class Base(BaseModel):
     e: Literal["pv", "pp", "ue", "se", "tr", "ti", "s"] = Field(
         ...,
         title="Event type",
@@ -122,17 +116,17 @@ class Contexts(Base):
     pp_miy: int = Field(0, title="Minimum page y offset seen in the last ping period")
     pp_may: int = Field(0, title="Maximum page y offset seen in the last ping period")
 
-    @computed_field
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def ue_context(self) -> dict[str, Any] | None:
         return find_available(self.ue_pr, self.ue_px)
 
-    @computed_field
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def contexts(self) -> dict[str, Any] | None:
         return find_available(self.co, self.cx)
 
-    @computed_field
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def ping_context(self) -> dict[str, Any] | None:
         if self.e != "pp":
@@ -217,7 +211,7 @@ class PayloadModel(SnowPlowModel):
     data: list[PayloadElementModel] = Field([])
 
 
-class UserAgentModel(Model):
+class UserAgentModel(BaseModel):
     user_agent: str = Field("", title="User agent string")
     browser_family: str = Field("", title="Browser family")
     browser_version: list[str] = Field([], title="Browser version")

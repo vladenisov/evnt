@@ -1,5 +1,6 @@
 import pytest
 from clickhouse_connect.driver.exceptions import DataError
+
 from evnt.config import RabbitMQConfig
 from evnt.ingest import rabbitmq as rabbitmq_module
 from evnt.ingest.rabbitmq import QueuedInsertPayload, RabbitMQBatchWorker
@@ -98,7 +99,6 @@ def _worker(sink, **overrides):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_worker_batches_messages_before_insert(anyio_backend):
     sink = _BatchSink()
     worker = _worker(sink)
@@ -119,7 +119,6 @@ async def test_worker_batches_messages_before_insert(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_worker_requeues_messages_when_batch_insert_fails(anyio_backend):
     sink = _BatchSink(fail=True)
     worker = _worker(sink, batch_size=10)
@@ -139,7 +138,6 @@ async def test_worker_requeues_messages_when_batch_insert_fails(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_worker_moves_only_failed_message_to_failed_queue_for_clickhouse_data_error(
     anyio_backend,
 ):
@@ -165,20 +163,13 @@ async def test_worker_moves_only_failed_message_to_failed_queue_for_clickhouse_d
     assert messages[2].acked is True
     assert messages[1].rejected is False
     assert messages[1].nacked is False
-    assert (
-        worker.channel.default_exchange.published[0]["routing_key"]
-        == "evnt.ingest.failed"
-    )
-    assert (
-        worker.channel.default_exchange.published[0]["message"].body == messages[1].body
-    )
+    assert worker.channel.default_exchange.published[0]["routing_key"] == "evnt.ingest.failed"
+    assert worker.channel.default_exchange.published[0]["message"].body == messages[1].body
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_retry_rabbitmq_startup_waits_until_connection_is_ready(
     monkeypatch,
-    anyio_backend,
 ):
     attempts = 0
     sleep_calls = []

@@ -6,13 +6,14 @@ path have to hold.
 """
 
 import pytest
-from evnt.config import settings
-from evnt.api.deps import get_db_connector
 from fastapi.testclient import TestClient
-from evnt.middleware.body_limit import BodySizeLimitMiddleware
 from starlette.applications import Starlette
 from starlette.responses import PlainTextResponse
 from starlette.routing import Route
+
+from evnt.api.deps import get_db_connector
+from evnt.config import settings
+from evnt.middleware.body_limit import BodySizeLimitMiddleware
 from evnt.tests.support import build_app
 
 HTTP_OK = 200
@@ -105,10 +106,7 @@ class TestWiredIntoTheApp:
             response = client.post(
                 "/tracker",
                 json={
-                    "schema": (
-                        "iglu:com.snowplowanalytics.snowplow/"
-                        "payload_data/jsonschema/1-0-4"
-                    ),
+                    "schema": ("iglu:com.snowplowanalytics.snowplow/payload_data/jsonschema/1-0-4"),
                     "data": [{"e": "pv", "aid": "x" * 4096, "p": "web", "tv": "js"}],
                 },
             )
@@ -124,10 +122,7 @@ class TestWiredIntoTheApp:
             response = client.post(
                 "/tracker",
                 json={
-                    "schema": (
-                        "iglu:com.snowplowanalytics.snowplow/"
-                        "payload_data/jsonschema/1-0-4"
-                    ),
+                    "schema": ("iglu:com.snowplowanalytics.snowplow/payload_data/jsonschema/1-0-4"),
                     "data": [
                         {
                             "e": "pv",

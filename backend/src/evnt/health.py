@@ -4,13 +4,12 @@ import asyncio
 from collections.abc import Callable
 
 import structlog
+from clickhouse_connect.driver.asyncclient import AsyncClient
 
 from evnt.protocols import HealthChecker
+from evnt.storage.clickhouse.client import is_ready
 
 logger = structlog.get_logger(__name__)
-
-# SQL used to verify ClickHouse connectivity during health checks.
-_CLICKHOUSE_HEALTH_QUERY: str = "SELECT 1"
 
 
 class CachedHealthChecker:
@@ -60,18 +59,14 @@ class CachedHealthChecker:
 class ClickHouseHealthChecker:
     """Health checker for direct ClickHouse ingest."""
 
-    def __init__(self, client) -> None:
+    def __init__(self, client: AsyncClient) -> None:
         self.client = client
 
     async def check(self) -> dict[str, bool]:
-        """Check ClickHouse connectivity."""
-
-        healthy = True
+        """Check that ClickHouse answers queries."""
         try:
-            query = await self.client.query(_CLICKHOUSE_HEALTH_QUERY)
-            healthy = query.first_row[0] == 1
+            healthy = await is_ready(self.client)
         except Exception as exc:
             logger.warning("ClickHouse health check failed", error=str(exc))
             healthy = False
-
         return {"clickhouse": healthy}

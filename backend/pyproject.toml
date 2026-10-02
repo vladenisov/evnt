@@ -16,7 +16,6 @@ dependencies = [
     "fire>=0.7.0",
     "httpx>=0.28.1",
     "jsonschema>=4.25.1",
-    "json-repair>=0.44.0",
     "orjson>=3.10.16",
     "prometheus-fastapi-instrumentator>=7.1.0",
     "pydantic>=2.11",
@@ -72,7 +71,7 @@ select = ["E", "W", "F", "I", "N", "UP", "B", "C4", "SIM", "RUF", "PLC0415"]
 
 [tool.ruff.lint.per-file-ignores]
 # Fixtures embed long Iglu URIs and payloads.
-"src/evnt/tests/**" = ["E501", "PLC0415"]
+"src/evnt/tests/**" = ["E501", "PLC0415", "RUF012"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["evnt"]
@@ -86,7 +85,7 @@ plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 # No type information shipped.
-module = ["fire.*", "crawlerdetect.*", "json_repair.*", "elasticapm.*", "jsonschema.*", "brotli_asgi.*"]
+module = ["brotli_asgi.*", "clickhouse_connect.*", "crawlerdetect.*", "elasticapm.*", "fire.*", "jsonschema.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

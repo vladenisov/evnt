@@ -21,10 +21,11 @@ from aio_pika.abc import (
 )
 from aio_pika.exceptions import AuthenticationError, ProbableAuthenticationError
 from clickhouse_connect.driver.exceptions import DataError
+from pydantic import BaseModel, Field
+
 from evnt.config import RabbitMQConfig
 from evnt.constants import WORKER_HEARTBEAT_SECONDS, WORKER_LIVENESS_PATH
 from evnt.protocols import RowSink
-from pydantic import BaseModel, Field
 
 logger = structlog.get_logger(__name__)
 
@@ -51,10 +52,8 @@ def _resolve_table_name(
     cluster_name: str | None,
     table_group: str,
 ) -> str:
-    table_config = tables[table_group]
-    if cluster_name:
-        return table_config["distributed"]["name"]
-    return table_config["local"]["name"]
+    kind = "distributed" if cluster_name else "local"
+    return str(tables[table_group][kind]["name"])
 
 
 class QueuedInsertPayload(BaseModel):
@@ -387,7 +386,7 @@ class RabbitMQBatchWorker:
         if max_failures <= 0:
             return 0.0
         # base * 2**(n-1), capped, so the first failure waits ``retry_delay``.
-        delay = self.retry_delay * (2 ** (max_failures - 1))
+        delay: float = self.retry_delay * 2.0 ** (max_failures - 1)
         return min(delay, self.MAX_BACKOFF_SECONDS)
 
     def _pending_backoff_seconds(self) -> float:
@@ -401,7 +400,7 @@ class RabbitMQBatchWorker:
         max_failures = max(unapplied_failures, default=0)
         if max_failures <= 0:
             return 0.0
-        delay = self.retry_delay * (2 ** (max_failures - 1))
+        delay: float = self.retry_delay * 2.0 ** (max_failures - 1)
         return min(delay, self.MAX_BACKOFF_SECONDS)
 
     async def _apply_backoff(self) -> None:
@@ -509,8 +508,7 @@ class RabbitMQBatchWorker:
             Message(
                 body=item.message.body,
                 headers=headers,
-                content_type=getattr(item.message, "content_type", None)
-                or "application/json",
+                content_type=getattr(item.message, "content_type", None) or "application/json",
                 delivery_mode=DeliveryMode.PERSISTENT,
                 type=getattr(item.message, "type", None) or "evnt.insert.failed",
             ),
@@ -544,8 +542,7 @@ class RabbitMQBatchWorker:
         except DataError as exc:
             if len(pending) == 1:
                 logger.warning(
-                    "Isolated queue message failed ClickHouse validation, "
-                    "moving to failed queue",
+                    "Isolated queue message failed ClickHouse validation, moving to failed queue",
                     error=str(exc),
                     table_group=table_group,
                     rows_count=rows_count,
@@ -556,8 +553,7 @@ class RabbitMQBatchWorker:
                     await self._publish_failed_message(pending[0], table_group, exc)
                 except Exception as publish_exc:
                     logger.error(
-                        "Failed to move invalid queue message to failed queue,"
-                        " requeueing",
+                        "Failed to move invalid queue message to failed queue, requeueing",
                         error=str(publish_exc),
                         table_group=table_group,
                         rows_count=rows_count,

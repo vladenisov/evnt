@@ -1,6 +1,5 @@
 from evnt.tracker import ip as ip_module
 
-
 convert_ip = ip_module.convert_ip
 extract_ip_from_header = ip_module.extract_ip_from_header
 DEFAULT_IPV4 = ip_module.DEFAULT_IPV4

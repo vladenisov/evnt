@@ -1,53 +1,75 @@
-"""APM tracing decorators with a safe fallback.
+"""APM span helpers that degrade to no-ops without ``elastic-apm``.
 
-Re-exports Elastic APM span helpers when the ``elastic-apm`` package is
-installed; otherwise provides pass-through no-ops so the app can run
-without the APM dependency. Both shims support the two APIs the real
-library offers:
+Both helpers support the two forms the real library offers:
 
-- decorator form:          ``@async_capture_span()``/``@capture_span()``
-- context-manager form:    ``async with async_capture_span("name"): ...``
-                           ``with capture_span("name"): ...``
+- decorator:        ``@async_capture_span()`` / ``@capture_span()``
+- context manager:  ``async with async_capture_span("name"): ...``
+                    ``with capture_span("name"): ...``
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from types import TracebackType
+from typing import TYPE_CHECKING, Any, Protocol
 
-try:
-    from elasticapm.contrib.asyncio.traces import (
-        async_capture_span,
-        capture_span,
-    )
-except ImportError:
+if TYPE_CHECKING:
 
-    class _AsyncNoopSpan:
-        def __init__(self, *_args: Any, **_kwargs: Any) -> None: ...
+    class _AsyncSpan(Protocol):
+        def __call__[F: Callable[..., Any]](self, func: F, /) -> F: ...
 
-        def __call__(self, func: Callable) -> Callable:
-            return func
+        async def __aenter__(self) -> object: ...
 
-        async def __aenter__(self) -> _AsyncNoopSpan:
-            return self
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: TracebackType | None,
+            /,
+        ) -> bool | None: ...
 
-        async def __aexit__(self, *_exc: Any) -> bool:
-            return False
+    class _SyncSpan(Protocol):
+        def __call__[F: Callable[..., Any]](self, func: F, /) -> F: ...
 
-    class _NoopSpan:
-        def __init__(self, *_args: Any, **_kwargs: Any) -> None: ...
+        def __enter__(self) -> object: ...
 
-        def __call__(self, func: Callable) -> Callable:
-            return func
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: TracebackType | None,
+            /,
+        ) -> bool | None: ...
 
-        def __enter__(self) -> _NoopSpan:
-            return self
+    def async_capture_span(name: str | None = None, **kwargs: Any) -> _AsyncSpan: ...
 
-        def __exit__(self, *_exc: Any) -> bool:
-            return False
+    def capture_span(name: str | None = None, **kwargs: Any) -> _SyncSpan: ...
 
-    async_capture_span = _AsyncNoopSpan  # type: ignore[misc,assignment]
-    capture_span = _NoopSpan  # type: ignore[misc,assignment]
+else:
+    try:
+        from elasticapm.contrib.asyncio.traces import async_capture_span, capture_span
+    except ImportError:
+
+        class _NoopSpan:
+            def __init__(self, *_args: Any, **_kwargs: Any) -> None: ...
+
+            def __call__(self, func: Callable[..., Any]) -> Callable[..., Any]:
+                return func
+
+            def __enter__(self) -> _NoopSpan:
+                return self
+
+            def __exit__(self, *_exc: object) -> bool:
+                return False
+
+            async def __aenter__(self) -> _NoopSpan:
+                return self
+
+            async def __aexit__(self, *_exc: object) -> bool:
+                return False
+
+        async_capture_span = _NoopSpan
+        capture_span = _NoopSpan
 
 
 __all__ = ["async_capture_span", "capture_span"]

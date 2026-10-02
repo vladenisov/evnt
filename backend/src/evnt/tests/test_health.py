@@ -1,6 +1,7 @@
 import asyncio
 
 import pytest
+
 from evnt.health import CachedHealthChecker
 
 
@@ -26,7 +27,6 @@ class _SlowHealthChecker:
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_cached_health_checker_reuses_status_until_ttl_expires(anyio_backend):
     current_time = 0.0
     checker = _FakeHealthChecker({"backend": True}, {"backend": False})
@@ -49,7 +49,6 @@ async def test_cached_health_checker_reuses_status_until_ttl_expires(anyio_backe
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_cached_health_checker_can_be_disabled(anyio_backend):
     checker = _FakeHealthChecker({"backend": True}, {"backend": False})
     cached = CachedHealthChecker(checker, ttl_seconds=0, clock=lambda: 0.0)
@@ -60,7 +59,6 @@ async def test_cached_health_checker_can_be_disabled(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_cached_health_checker_coalesces_concurrent_misses(anyio_backend):
     checker = _SlowHealthChecker()
     cached = CachedHealthChecker(checker, ttl_seconds=2.0, clock=lambda: 0.0)

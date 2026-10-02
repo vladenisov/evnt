@@ -1,13 +1,16 @@
 from uuid import UUID
 
 import pytest
+
 from evnt.storage.clickhouse.connector import ClickHouseConnector
-from evnt.storage.clickhouse.schema import register_fields
 from evnt.storage.clickhouse.schema import (
     STRING,
-    UUID as CLICKHOUSE_UUID,
     ColumnDef,
     TupleColumnDef,
+    register_fields,
+)
+from evnt.storage.clickhouse.schema import (
+    UUID as CLICKHOUSE_UUID,
 )
 
 
@@ -53,7 +56,6 @@ register_fields(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_insert_rows_issues_single_batch_request(anyio_backend):
     client = _FakeClient()
     connector = ClickHouseConnector(
@@ -72,7 +74,6 @@ async def test_insert_rows_issues_single_batch_request(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_insert_rows_noop_for_empty_batch(anyio_backend):
     client = _FakeClient()
     connector = ClickHouseConnector(
@@ -87,7 +88,6 @@ async def test_insert_rows_noop_for_empty_batch(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_insert_batch_sends_single_clickhouse_insert(anyio_backend):
     client = _FakeClient()
     connector = ClickHouseConnector(
@@ -107,7 +107,6 @@ async def test_insert_batch_sends_single_clickhouse_insert(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_insert_batch_reuses_cached_insert_metadata(anyio_backend):
     register_fields(
         "test_cached_events",
@@ -172,7 +171,6 @@ register_fields(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_insert_batch_sanitizes_none_for_string_columns(anyio_backend):
     client = _FakeClient()
     connector = ClickHouseConnector(
@@ -198,7 +196,6 @@ async def test_insert_batch_sanitizes_none_for_string_columns(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_insert_batch_converts_uuid_strings_from_json_queue(anyio_backend):
     client = _FakeClient()
     connector = ClickHouseConnector(
@@ -224,3 +221,17 @@ async def test_insert_batch_converts_uuid_strings_from_json_queue(anyio_backend)
         [UUID("00000000-0000-0000-0000-000000000000")],
         [UUID("94eb9eca-a77f-4c08-b90c-1260efde3cc5")],
     ]
+
+
+def test_empty_insert_settings_mean_synchronous_inserts():
+    # `ingest.direct.async_insert=false` produces {}: it must not be replaced
+    # by the async defaults, or async inserts could never be turned off.
+    connector = ClickHouseConnector(object(), tables=_tables(), insert_settings={})
+
+    assert connector.insert_settings == {}
+
+
+def test_missing_insert_settings_default_to_async_inserts():
+    connector = ClickHouseConnector(object(), tables=_tables())
+
+    assert connector.insert_settings["async_insert"] == 1

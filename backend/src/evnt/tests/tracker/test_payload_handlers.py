@@ -66,7 +66,6 @@ async def _run_contexts(schema_uri, data, **overrides):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_web_page_context_sets_view_id(anyio_backend):
     view_id = "11111111-1111-1111-1111-111111111111"
     result = await _run_contexts(
@@ -78,7 +77,6 @@ async def test_web_page_context_sets_view_id(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_web_page_context_bad_uuid_falls_back_to_default(anyio_backend):
     result = await _run_contexts(
         "iglu:com.snowplowanalytics.snowplow/web_page/jsonschema/1-0-0",
@@ -89,7 +87,6 @@ async def test_web_page_context_bad_uuid_falls_back_to_default(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_client_session_context_populates_session_fields(anyio_backend):
     session_id = "22222222-2222-2222-2222-222222222222"
     user_id = "33333333-3333-3333-3333-333333333333"
@@ -120,7 +117,6 @@ async def test_client_session_context_populates_session_fields(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_client_session_bad_datetime_and_uuids_fall_back(anyio_backend):
     result = await _run_contexts(
         "iglu:com.snowplowanalytics.snowplow/client_session/jsonschema/1-0-2",
@@ -141,7 +137,6 @@ async def test_client_session_bad_datetime_and_uuids_fall_back(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_mobile_context_maps_device_and_os_fields(anyio_backend):
     result = await _run_contexts(
         "iglu:com.snowplowanalytics.snowplow/mobile_context/jsonschema/1-0-3",
@@ -165,7 +160,6 @@ async def test_mobile_context_maps_device_and_os_fields(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_mobile_screen_context_sets_url_and_view_id(anyio_backend):
     screen_id = "66666666-6666-6666-6666-666666666666"
     result = await _run_contexts(
@@ -179,7 +173,6 @@ async def test_mobile_screen_context_sets_url_and_view_id(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_amp_context_merges_into_amp_dict(anyio_backend):
     result = await _run_contexts(
         "iglu:dev.amp.snowplow/amp_id/jsonschema/1-0-0",
@@ -191,7 +184,6 @@ async def test_amp_context_merges_into_amp_dict(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_mobile_application_sets_app_version_and_build(anyio_backend):
     result = await _run_contexts(
         "iglu:com.snowplowanalytics.mobile/application/jsonschema/1-0-0",
@@ -203,7 +195,6 @@ async def test_mobile_application_sets_app_version_and_build(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_static_and_performance_and_client_hints_go_to_extra(anyio_backend):
     model = _base_model()
     contexts = {
@@ -236,22 +227,18 @@ async def test_static_and_performance_and_client_hints_go_to_extra(anyio_backend
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_geolocation_and_ue_setter_handlers(anyio_backend):
     model = _base_model()
     contexts = {
         "data": [
             {
                 "schema": (
-                    "iglu:com.snowplowanalytics.snowplow/"
-                    "geolocation_context/jsonschema/1-1-0"
+                    "iglu:com.snowplowanalytics.snowplow/geolocation_context/jsonschema/1-1-0"
                 ),
                 "data": {"latitude": 1.0, "longitude": 2.0},
             },
             {
-                "schema": (
-                    "iglu:com.snowplowanalytics.mobile/screen_summary/jsonschema/1-0-0"
-                ),
+                "schema": ("iglu:com.snowplowanalytics.mobile/screen_summary/jsonschema/1-0-0"),
                 "data": {"foregroundSec": 12},
             },
         ],
@@ -264,7 +251,6 @@ async def test_geolocation_and_ue_setter_handlers(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_browser_context_keeps_dims_and_stashes_extra(anyio_backend):
     result = await _run_contexts(
         "iglu:com.snowplowanalytics.snowplow/browser_context/jsonschema/2-0-0",
@@ -277,7 +263,6 @@ async def test_browser_context_keeps_dims_and_stashes_extra(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_unknown_schema_is_skipped_with_warning(anyio_backend):
     model = _base_model()
     contexts = {
@@ -293,7 +278,6 @@ async def test_unknown_schema_is_skipped_with_warning(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_contexts_with_missing_keys_and_non_dict_are_skipped(anyio_backend):
     model = _base_model()
     contexts = {
@@ -315,7 +299,6 @@ async def test_contexts_with_missing_keys_and_non_dict_are_skipped(anyio_backend
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_contexts_none_or_missing_data_key_returns_model_unchanged(anyio_backend):
     model = _base_model()
 
@@ -324,7 +307,6 @@ async def test_contexts_none_or_missing_data_key_returns_model_unchanged(anyio_b
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_non_dict_data_payload_is_skipped(anyio_backend):
     model = _base_model()
     contexts = {
@@ -347,7 +329,6 @@ async def test_non_dict_data_payload_is_skipped(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_parse_payload_amp_linker_extracts_device_id(anyio_backend):
     # sp_amp_linker format: "1*<hash>*<base64 device id>".
     device_uuid = "77777777-7777-7777-7777-777777777777"
@@ -374,7 +355,6 @@ async def test_parse_payload_amp_linker_extracts_device_id(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_parse_payload_cookie_duid_fallback(anyio_backend):
     device_id = "88888888-8888-8888-8888-888888888888"
     cookie = (
@@ -403,7 +383,6 @@ async def test_parse_payload_cookie_duid_fallback(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_parse_payload_normalizes_se_property_and_value(anyio_backend):
     element = PayloadElementModel.model_validate(
         {
@@ -431,7 +410,6 @@ async def test_parse_payload_normalizes_se_property_and_value(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_parse_payload_non_numeric_se_value_stashed(anyio_backend):
     element = PayloadElementModel.model_validate(
         {
@@ -456,7 +434,6 @@ async def test_parse_payload_non_numeric_se_value_stashed(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_parse_payload_client_hints_device_flags(anyio_backend):
     element = PayloadElementModel.model_validate(
         {

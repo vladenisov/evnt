@@ -40,9 +40,7 @@ def test_validate_iglu_payload_accepts_valid_payload(monkeypatch, tmp_path):
     result = iglu_module.validate_iglu_payload(schema_uri, {"name": "ok"})
 
     assert result.status == "ok"
-    assert (
-        result.schema_path == tmp_path / "com.acme" / "example" / "jsonschema" / "1-0-0"
-    )
+    assert result.schema_path == tmp_path / "com.acme" / "example" / "jsonschema" / "1-0-0"
 
 
 def test_validate_iglu_payload_warns_when_schema_file_is_missing(monkeypatch, tmp_path):
@@ -54,9 +52,7 @@ def test_validate_iglu_payload_warns_when_schema_file_is_missing(monkeypatch, tm
 
     assert result.status == "warning"
     assert result.error == "schema file not found"
-    assert (
-        result.schema_path == tmp_path / "com.acme" / "missing" / "jsonschema" / "1-0-0"
-    )
+    assert result.schema_path == tmp_path / "com.acme" / "missing" / "jsonschema" / "1-0-0"
 
 
 def test_validate_iglu_payload_warns_when_schema_json_is_invalid(monkeypatch, tmp_path):

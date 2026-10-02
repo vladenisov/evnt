@@ -1,7 +1,6 @@
 """Access log middleware that can skip noisy paths."""
 
 from collections.abc import Iterable
-from typing import Any
 
 from fastapi_structlog.middleware import AccessLogMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -13,10 +12,10 @@ class PathSkippingAccessLogMiddleware(AccessLogMiddleware):
     def __init__(
         self,
         app: ASGIApp,
+        *,
         excluded_paths: Iterable[str] = (),
-        **kwargs: Any,
     ) -> None:
-        super().__init__(app, **kwargs)
+        super().__init__(app)
         self.excluded_paths = frozenset(excluded_paths)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:

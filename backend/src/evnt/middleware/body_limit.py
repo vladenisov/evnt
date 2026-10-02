@@ -6,15 +6,16 @@ parse an arbitrarily large body, so one request can occupy a worker for as long
 as it likes. This caps every endpoint uniformly; the encrypted endpoint applies
 its own, much tighter limit on top.
 
-Written as raw ASGI rather than on top of ``BaseMiddleware``: the check has to
-count bytes as they arrive off ``receive``, which ``BaseHTTPMiddleware`` does
-not expose, and buffering the body just to measure it would defeat the point.
+Written as raw ASGI: the check has to count bytes as they arrive off
+``receive``, which ``BaseHTTPMiddleware`` does not expose, and buffering the
+body just to measure it would defeat the point.
 """
 
 import structlog
-from evnt.constants import CONTENT_TYPE_JSON
 from starlette.status import HTTP_413_CONTENT_TOO_LARGE
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+from evnt.constants import CONTENT_TYPE_JSON
 
 logger = structlog.get_logger(__name__)
 
@@ -88,12 +89,14 @@ class BodySizeLimitMiddleware:
             limit=self.max_bytes,
             reason=reason,
         )
-        await send({
-            "type": "http.response.start",
-            "status": HTTP_413_CONTENT_TOO_LARGE,
-            "headers": [
-                (b"content-type", CONTENT_TYPE_JSON.encode()),
-                (b"content-length", str(len(_TOO_LARGE_BODY)).encode()),
-            ],
-        })
+        await send(
+            {
+                "type": "http.response.start",
+                "status": HTTP_413_CONTENT_TOO_LARGE,
+                "headers": [
+                    (b"content-type", CONTENT_TYPE_JSON.encode()),
+                    (b"content-length", str(len(_TOO_LARGE_BODY)).encode()),
+                ],
+            }
+        )
         await send({"type": "http.response.body", "body": _TOO_LARGE_BODY})

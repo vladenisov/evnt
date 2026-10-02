@@ -1,11 +1,8 @@
-from pathlib import Path
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 from evnt.tracker import payload as payload_module
-
 
 parse_cookies = payload_module.parse_cookies
 parse_contexts = payload_module.parse_contexts

@@ -7,12 +7,13 @@ from copy import copy
 from threading import Lock
 from typing import Final
 
+from crawlerdetect import CrawlerDetect
+from ua_parser import parse
+
 from evnt.concurrency import run_cpu_task
 from evnt.config import settings
 from evnt.observability.tracing import capture_span
-from crawlerdetect import CrawlerDetect
 from evnt.tracker.models import UserAgentModel
-from ua_parser import parse
 
 USER_AGENT_CACHE_SIZE: Final[int] = settings.performance.user_agent_cache_size
 _MUTABLE_USER_AGENT_FIELDS: Final[tuple[str, ...]] = (
@@ -88,23 +89,27 @@ def _parse_agent_uncached(string: str) -> UserAgentModel:
     browser = ua.user_agent
     if browser is not None:
         data.browser_family = browser.family or ""
-        data.browser_version = _join_version([
-            browser.major,
-            browser.minor,
-            browser.patch,
-            browser.patch_minor,
-        ])
+        data.browser_version = _join_version(
+            [
+                browser.major,
+                browser.minor,
+                browser.patch,
+                browser.patch_minor,
+            ]
+        )
         data.browser_version_string = ".".join(data.browser_version)
 
     os = ua.os
     if os is not None:
         data.os_family = os.family or ""
-        data.os_version = _join_version([
-            os.major,
-            os.minor,
-            os.patch,
-            os.patch_minor,
-        ])
+        data.os_version = _join_version(
+            [
+                os.major,
+                os.minor,
+                os.patch,
+                os.patch_minor,
+            ]
+        )
         data.os_version_string = ".".join(data.os_version)
 
     device = ua.device

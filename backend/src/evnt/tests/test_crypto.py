@@ -9,6 +9,10 @@ import gzip
 import zlib
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+
 from evnt.config import EncryptionConfig, EncryptionKeyConfig
 from evnt.constants import (
     ENVELOPE_MAGIC,
@@ -31,9 +35,6 @@ from evnt.crypto import (
     seal_envelope,
     validate_kid,
 )
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ed25519
-from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
 PLAINTEXT = b'{"schema":"iglu:test/jsonschema/1-0-0","data":[{"e":"pv"}]}'
 LIMIT = 64 * 1024
@@ -49,9 +50,11 @@ def keypair() -> tuple[str, bytes]:
 @pytest.fixture
 def keyring(keypair: tuple[str, bytes]) -> Keyring:
     private_b64, public_raw = keypair
-    return Keyring({
-        "k1": KeyPair("k1", parse_private_key(private_b64), public_raw),
-    })
+    return Keyring(
+        {
+            "k1": KeyPair("k1", parse_private_key(private_b64), public_raw),
+        }
+    )
 
 
 class TestRoundTrip:
@@ -123,14 +126,16 @@ class TestTampering:
         """
         first_private, first_public = generate_keypair()
         second_private, _ = generate_keypair()
-        keyring = Keyring({
-            "k0": KeyPair("k0", parse_private_key(second_private), b""),
-            "k1": KeyPair(
-                "k1",
-                parse_private_key(first_private),
-                base64.b64decode(first_public),
-            ),
-        })
+        keyring = Keyring(
+            {
+                "k0": KeyPair("k0", parse_private_key(second_private), b""),
+                "k1": KeyPair(
+                    "k1",
+                    parse_private_key(first_private),
+                    base64.b64decode(first_public),
+                ),
+            }
+        )
         sealed = bytearray(
             seal_envelope(base64.b64decode(first_public), "k1", PLAINTEXT),
         )
@@ -299,8 +304,7 @@ class TestKeyParsing:
 
     def test_non_x25519_key_is_rejected(self):
         pem = (
-            ed25519.Ed25519PrivateKey
-            .generate()
+            ed25519.Ed25519PrivateKey.generate()
             .private_bytes(
                 encoding=serialization.Encoding.PEM,
                 format=serialization.PrivateFormat.PKCS8,

@@ -117,13 +117,15 @@ class Snowplow(BaseModel):
         return header_name
 
 
-_VALID_LOG_LEVELS: frozenset[str] = frozenset({
-    "DEBUG",
-    "INFO",
-    "WARNING",
-    "ERROR",
-    "CRITICAL",
-})
+_VALID_LOG_LEVELS: frozenset[str] = frozenset(
+    {
+        "DEBUG",
+        "INFO",
+        "WARNING",
+        "ERROR",
+        "CRITICAL",
+    }
+)
 
 
 class LoggingConfig(BaseModel):
@@ -239,8 +241,7 @@ class EncryptionKeyConfig(BaseModel):
     kid: str = Field(
         ...,
         description=(
-            "Key id echoed in the envelope so clients can pick a key "
-            "without a coordinated flag day"
+            "Key id echoed in the envelope so clients can pick a key without a coordinated flag day"
         ),
     )
     private_key: SecretStr | None = Field(
@@ -357,8 +358,8 @@ class EncryptionConfig(BaseModel):
 class ProxyConfig(BaseModel):
     """Proxy configuration for external services."""
 
+    # Hosts whose scripts /proxy/hash rewrites and /proxy/route will fetch.
     domains: list[str] = ["google-analytics.com", "www.googletagmanager.com"]
-    paths: list[str] = ["analytics.js", "gtm.js"]
     # Outbound ports the proxy is allowed to reach on an allowlisted host.
     # The hostname allowlist alone does not constrain the port, so this keeps
     # the proxy on standard web ports by default while letting operators opt
@@ -436,20 +437,22 @@ class ClickHouseConfiguration(BaseModel):
                 "name": "local",
                 "engine": "MergeTree()",
                 "partition_by": "toYYYYMM(time)",
-                "order_by": ", ".join([
-                    "app",
-                    "platform",
-                    "app_id",
-                    "event_type",
-                    "toDate(time)",
-                    "event.category",
-                    "event.action",
-                    "page",
-                    "device_id",
-                    "cityHash64(device_id)",
-                    "session_id",
-                    "time",
-                ]),
+                "order_by": ", ".join(
+                    [
+                        "app",
+                        "platform",
+                        "app_id",
+                        "event_type",
+                        "toDate(time)",
+                        "event.category",
+                        "event.action",
+                        "page",
+                        "device_id",
+                        "cityHash64(device_id)",
+                        "session_id",
+                        "time",
+                    ]
+                ),
                 "sample_by": "cityHash64(device_id)",
                 "settings": "index_granularity = 8192",
             },

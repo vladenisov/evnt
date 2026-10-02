@@ -13,6 +13,7 @@ from uuid import UUID
 
 import pytest
 from clickhouse_connect.driver.exceptions import DataError
+
 from evnt.config import RabbitMQConfig
 from evnt.ingest.rabbitmq import (
     QueuedInsertPayload,
@@ -88,7 +89,6 @@ def _publisher(channel=None, *, cluster_name=None):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_publisher_insert_rows_publishes_persistent_message(anyio_backend):
     channel = _RecordingChannel()
     publisher = _publisher(channel)
@@ -106,7 +106,6 @@ async def test_publisher_insert_rows_publishes_persistent_message(anyio_backend)
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_publisher_serializes_typed_values_without_intermediate_copy(
     anyio_backend,
 ):
@@ -131,7 +130,6 @@ async def test_publisher_serializes_typed_values_without_intermediate_copy(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_publisher_insert_rows_noop_for_empty_rows(anyio_backend):
     channel = _RecordingChannel()
     publisher = _publisher(channel)
@@ -142,7 +140,6 @@ async def test_publisher_insert_rows_noop_for_empty_rows(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_publisher_get_table_name_local_and_distributed(anyio_backend):
     local_pub = _publisher(cluster_name=None)
     cluster_pub = _publisher(cluster_name="prod")
@@ -152,7 +149,6 @@ async def test_publisher_get_table_name_local_and_distributed(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_publisher_close_closes_channel_and_connection(anyio_backend):
     channel = _RecordingChannel()
     publisher = _publisher(channel)
@@ -222,7 +218,6 @@ def test_backoff_seconds_grows_exponentially_and_caps():
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_flush_failure_increments_failure_count_then_resets(anyio_backend):
     sink = _BatchSink(fail=True)
     worker = _worker(sink)
@@ -245,7 +240,6 @@ async def test_flush_failure_increments_failure_count_then_resets(anyio_backend)
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_flush_timeout_requeues_messages_and_records_failure(anyio_backend):
     worker = _worker(_HangingSink(), insert_timeout_seconds=0.01)
     msg = _FakeMessage(QueuedInsertPayload(rows=[{"id": 1}]))
@@ -259,7 +253,6 @@ async def test_flush_timeout_requeues_messages_and_records_failure(anyio_backend
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_worker_falls_back_to_insert_rows_when_no_insert_batch(anyio_backend):
     sink = _InsertRowsOnlySink()
     worker = _worker(sink)
@@ -273,7 +266,6 @@ async def test_worker_falls_back_to_insert_rows_when_no_insert_batch(anyio_backe
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_isolated_data_error_publishes_to_failed_queue_with_headers(
     anyio_backend,
 ):
@@ -299,7 +291,6 @@ async def test_isolated_data_error_publishes_to_failed_queue_with_headers(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_isolated_data_error_requeues_on_failed_queue_publish_error(
     anyio_backend,
 ):
@@ -322,7 +313,6 @@ async def test_isolated_data_error_requeues_on_failed_queue_publish_error(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_add_message_rejects_invalid_payload(anyio_backend):
     worker = _worker(_BatchSink())
 
@@ -341,7 +331,6 @@ async def test_add_message_rejects_invalid_payload(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_add_message_acks_empty_rows_without_buffering(anyio_backend):
     worker = _worker(_BatchSink())
     msg = _FakeMessage(QueuedInsertPayload(rows=[]))
@@ -353,7 +342,6 @@ async def test_add_message_acks_empty_rows_without_buffering(anyio_backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
 async def test_worker_close_closes_channel_and_connection(anyio_backend):
     channel = _RecordingChannel()
     worker = _worker(_BatchSink(), channel=channel)
