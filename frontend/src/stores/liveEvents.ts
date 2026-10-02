@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
+import { ref, shallowRef } from "vue";
 
 export type LogMethod = "GET" | "POST" | "OTHER";
 
@@ -11,26 +11,26 @@ export interface LiveLog {
   payload: unknown;
 }
 
-const MAX_LOGS = 500;
+/** The log keeps the newest entries only; a long-open tab must not grow without bound. */
+export const MAX_LOGS = 500;
 
 export const useLiveEvents = defineStore("liveEvents", () => {
-  const logs = ref<LiveLog[]>([]);
+  // Entries are never edited after they are logged, so a shallow ref skips
+  // making every (possibly large) payload deeply reactive.
+  const logs = shallowRef<readonly LiveLog[]>([]);
   const paused = ref(false);
   let nextId = 1;
 
-  function push(entry: Omit<LiveLog, "id">) {
+  function push(entry: Omit<LiveLog, "id">): void {
     if (paused.value) return;
-    logs.value.unshift({ id: nextId++, ...entry });
-    if (logs.value.length > MAX_LOGS) {
-      logs.value.length = MAX_LOGS;
-    }
+    logs.value = [{ id: nextId++, ...entry }, ...logs.value.slice(0, MAX_LOGS - 1)];
   }
 
-  function clear() {
+  function clear(): void {
     logs.value = [];
   }
 
-  function togglePaused() {
+  function togglePaused(): void {
     paused.value = !paused.value;
   }
 

@@ -1,8 +1,8 @@
 import { defineStore } from "pinia";
 import { computed, ref, watch } from "vue";
 
-const STORAGE_KEY = "evnt-demo:settings:v1";
-const PASSWORD_KEY = "evnt-demo:settings:pwd:v1";
+export const STORAGE_KEY = "evnt-demo:settings:v1";
+export const PASSWORD_KEY = "evnt-demo:settings:pwd:v1";
 
 export interface ClickHouseSettings {
   url: string;
@@ -11,38 +11,53 @@ export interface ClickHouseSettings {
   database: string;
 }
 
-const DEFAULTS: ClickHouseSettings = {
+export const DEFAULTS: Readonly<ClickHouseSettings> = Object.freeze({
   url: "http://localhost:8123",
   user: "default",
   password: "",
   database: "evnt",
-};
+});
 
-function loadFromStorage(): ClickHouseSettings {
-  let restored: ClickHouseSettings = { ...DEFAULTS };
+type Persisted = Omit<ClickHouseSettings, "password">;
+const PERSISTED_KEYS = ["url", "user", "database"] as const satisfies readonly (keyof Persisted)[];
+
+/**
+ * Read what an earlier visit saved. Anything that is not a string-valued field
+ * we know (hand-edited storage, an older format) falls back to its default
+ * instead of reaching the ClickHouse client as `undefined` or a number.
+ */
+function readPersisted(): Persisted {
+  const result: Persisted = { url: DEFAULTS.url, user: DEFAULTS.user, database: DEFAULTS.database };
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<ClickHouseSettings>;
-      restored = { ...DEFAULTS, ...parsed };
+    const parsed: unknown = raw ? JSON.parse(raw) : null;
+    if (parsed && typeof parsed === "object") {
+      const record = parsed as Record<string, unknown>;
+      for (const key of PERSISTED_KEYS) {
+        const value = record[key];
+        if (typeof value === "string") result[key] = value;
+      }
     }
   } catch {
-    restored = { ...DEFAULTS };
+    /* corrupt JSON or storage unavailable: keep the defaults */
   }
-  // Password is never persisted to localStorage; restore it from sessionStorage.
+  return result;
+}
+
+// The password is kept for this tab only (sessionStorage), never in localStorage.
+function readPassword(): string {
   try {
-    restored.password = sessionStorage.getItem(PASSWORD_KEY) ?? "";
+    return sessionStorage.getItem(PASSWORD_KEY) ?? "";
   } catch {
-    restored.password = "";
+    return "";
   }
-  return restored;
 }
 
 export const useSettings = defineStore("settings", () => {
-  const initial = loadFromStorage();
+  const initial = readPersisted();
   const url = ref(initial.url);
   const user = ref(initial.user);
-  const password = ref(initial.password);
+  const password = ref(readPassword());
   const database = ref(initial.database);
 
   const snapshot = computed<ClickHouseSettings>(() => ({
@@ -52,8 +67,7 @@ export const useSettings = defineStore("settings", () => {
     database: database.value,
   }));
 
-  watch(snapshot, (next) => {
-    const { password: nextPassword, ...persisted } = next;
+  watch(snapshot, ({ password: nextPassword, ...persisted }) => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));
     } catch {
@@ -66,7 +80,7 @@ export const useSettings = defineStore("settings", () => {
     }
   });
 
-  function reset() {
+  function reset(): void {
     url.value = DEFAULTS.url;
     user.value = DEFAULTS.user;
     password.value = DEFAULTS.password;

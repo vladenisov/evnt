@@ -8,7 +8,8 @@ import ConnectionForm from "@/components/ConnectionForm.vue";
     <p class="muted">
       The browser queries ClickHouse over HTTP directly. The server must
       respond with CORS headers (preflight + <code>Access-Control-Allow-Origin</code>).
-      Settings are stored in <code>localStorage</code>.
+      The URL, user and database are kept in <code>localStorage</code>; the
+      password only in <code>sessionStorage</code>, for this tab.
     </p>
     <ConnectionForm />
   </section>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import JsonTree from "@/components/JsonTree.vue";
 import type { LiveLog } from "@/stores/liveEvents";
 
@@ -10,13 +10,27 @@ const tagClass = computed(() =>
   props.log.method === "GET" ? "tag-get" : "tag-post",
 );
 
-function copyJson() {
+// navigator.clipboard is undefined outside a secure context (plain HTTP on a
+// non-localhost host) and writeText rejects when permission is denied; both
+// used to surface as uncaught errors. Report the outcome on the button instead.
+const copyState = ref<"idle" | "copied" | "failed">("idle");
+
+async function copyJson() {
   try {
-    void navigator.clipboard.writeText(JSON.stringify(props.log.payload, null, 2));
+    if (!navigator.clipboard) throw new Error("clipboard unavailable");
+    await navigator.clipboard.writeText(JSON.stringify(props.log.payload, null, 2));
+    copyState.value = "copied";
   } catch {
-    /* ignore */
+    copyState.value = "failed";
   }
+  setTimeout(() => {
+    copyState.value = "idle";
+  }, 1500);
 }
+
+const copyLabel = computed(() =>
+  copyState.value === "copied" ? "Copied" : copyState.value === "failed" ? "Copy failed" : "Copy JSON",
+);
 </script>
 
 <template>
@@ -25,7 +39,7 @@ function copyJson() {
       <span class="tag" :class="tagClass">{{ log.method }}</span>
       <span class="url" :title="log.url">{{ log.url }}</span>
       <span class="ts">{{ time }}</span>
-      <button class="btn copy" type="button" @click="copyJson">Copy JSON</button>
+      <button class="btn copy" type="button" @click="copyJson">{{ copyLabel }}</button>
     </header>
     <div class="body">
       <JsonTree :data="log.payload" />

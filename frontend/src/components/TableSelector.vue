@@ -11,21 +11,38 @@ const tables = ref<TableInfo[]>([]);
 const loading = ref(false);
 const error = ref<string | null>(null);
 
+// Only the newest refresh may write: settings change per keystroke, and an
+// older, slower answer (say, for a half-typed database name) must not win.
+let latestRefresh = 0;
+
 async function refresh() {
+  const ticket = ++latestRefresh;
   loading.value = true;
   error.value = null;
   try {
-    tables.value = await listTables(settings.database);
+    const result = await listTables(settings.database);
+    if (ticket !== latestRefresh) return;
+    tables.value = result;
+    // Keep the selection pointing at a table that exists: after switching
+    // database the old choice would query a table that is not there.
+    const names = result.map((t) => `${t.database}.${t.name}`);
+    const [first] = names;
+    if (first !== undefined && !names.includes(props.modelValue)) {
+      emit("update:modelValue", first);
+    }
   } catch (e) {
+    if (ticket !== latestRefresh) return;
     error.value = e instanceof Error ? e.message : String(e);
     tables.value = [];
   } finally {
-    loading.value = false;
+    if (ticket === latestRefresh) loading.value = false;
   }
 }
 
+// Through a getter: `settings.snapshot` on the store is the unwrapped value,
+// which watch() cannot track, so a changed connection never refreshed the list.
 watch(
-  settings.snapshot,
+  () => settings.snapshot,
   () => {
     void refresh();
   },

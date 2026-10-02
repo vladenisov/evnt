@@ -1,35 +1,40 @@
 {
-  "name": "evnt-demo-web",
+  "name": "evnt-demo",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@10.33.2",
+  "packageManager": "pnpm@11.28.2",
+  "engines": {
+    "node": ">=26 <27",
+    "pnpm": ">=11.6.0 <12"
+  },
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc --noEmit && vite build",
+    "build": "vue-tsc -b && vite build",
     "preview": "vite preview",
-    "type-check": "vue-tsc --noEmit",
-    "lint": "eslint ."
+    "lint": "oxlint --deny-warnings --report-unused-disable-directives",
+    "typecheck": "vue-tsc -b",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@clickhouse/client-web": "^1.13.0",
+    "@clickhouse/client-web": "^1.23.1",
     "@tanstack/vue-table": "^8.21.3",
-    "pinia": "^2.3.0",
-    "vue": "^3.5.13",
-    "vue-router": "^4.5.0"
+    "pinia": "^4.0.3",
+    "vue": "^3.5.43",
+    "vue-router": "^5.3.1"
   },
   "devDependencies": {
-    "@types/node": "^22.10.5",
-    "@vitejs/plugin-vue": "^5.2.1",
-    "@vue/eslint-config-typescript": "^14.2.0",
-    "@vue/tsconfig": "^0.7.0",
-    "eslint": "^9.18.0",
-    "eslint-plugin-vue": "^9.32.0",
-    "typescript": "~5.7.2",
-    "vite": "^6.0.7",
-    "vue-tsc": "^2.2.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": ["esbuild", "vue-demi"]
+    "@types/node": "26.6.2",
+    "@vitejs/plugin-vue": "^6.0.9",
+    "@vitest/coverage-v8": "^5.0.3",
+    "@vue/test-utils": "^2.5.1",
+    "@vue/tsconfig": "^0.9.1",
+    "happy-dom": "^20.14.5",
+    "oxlint": "1.86.0",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "vite": "^8.3.2",
+    "vitest": "^5.0.3",
+    "vue-tsc": "3.3.11"
   }
 }

@@ -13,7 +13,7 @@ const props = withDefaults(
   {
     name: null,
     depth: 0,
-    initiallyExpanded: false,
+    initiallyExpanded: undefined,
     isLast: true,
     maxDepth: 6,
   },
@@ -42,7 +42,9 @@ const entries = computed<Array<[string | number, unknown]>>(() => {
   return [];
 });
 
-const expanded = ref<boolean>(props.initiallyExpanded || props.depth === 0);
+// Unset means "expand the root only". An explicit `false` (table cells) must
+// stay collapsed, which the old `initiallyExpanded || depth === 0` ignored.
+const expanded = ref<boolean>(props.initiallyExpanded ?? props.depth === 0);
 
 function toggle() {
   expanded.value = !expanded.value;

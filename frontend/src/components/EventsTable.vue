@@ -10,6 +10,7 @@ import {
 import {
   countRows,
   describeTable,
+  parseQualified,
   queryRows,
   type ColumnInfo,
 } from "@/lib/clickhouse";
@@ -64,63 +65,77 @@ const columns = computed<ColumnDef<Row>[]>(() =>
   })),
 );
 
+// Every load takes a ticket; only the newest one may write its results.
+// Sorting, paging, the table and the connection settings can all change
+// while a query is in flight, and a slower, older response must not
+// overwrite a newer one (or clear `loading` under it).
+let latestLoad = 0;
+
 async function load() {
+  const ticket = ++latestLoad;
   if (!props.qualified) {
     rows.value = [];
     totalRows.value = 0;
     columnsInfo.value = [];
+    loading.value = false;
     return;
   }
   loading.value = true;
   error.value = null;
   try {
-    const [database, table] = props.qualified.split(".");
-    if (columnsInfo.value.length === 0) {
-      columnsInfo.value = await describeTable(database, table);
+    const qualified = props.qualified;
+    let columnList = columnsInfo.value;
+    if (columnList.length === 0) {
+      const { database, table } = parseQualified(qualified);
+      columnList = await describeTable(database, table);
+      if (ticket !== latestLoad) return;
+      columnsInfo.value = columnList;
     }
 
     const sort = sorting.value[0];
-    const orderBy = sort && columnsInfo.value.some((c) => c.name === sort.id)
-      ? sort.id
-      : undefined;
+    const orderBy = sort && columnList.some((c) => c.name === sort.id) ? sort.id : undefined;
 
     const [data, count] = await Promise.all([
       queryRows<Row>({
-        qualified: props.qualified,
+        qualified,
         limit: pagination.value.pageSize,
         offset: pagination.value.pageIndex * pagination.value.pageSize,
         orderBy,
         desc: sort?.desc ?? true,
       }),
-      countRows(props.qualified),
+      countRows(qualified),
     ]);
+    if (ticket !== latestLoad) return;
     rows.value = data;
     totalRows.value = count;
   } catch (e) {
+    if (ticket !== latestLoad) return;
     error.value = e instanceof Error ? e.message : String(e);
     rows.value = [];
     totalRows.value = 0;
   } finally {
-    loading.value = false;
+    if (ticket === latestLoad) loading.value = false;
   }
 }
 
+// A different table (or a different server/database) has different columns.
 watch(
-  () => props.qualified,
+  [() => props.qualified, () => settings.snapshot],
   () => {
     columnsInfo.value = [];
-    pagination.value.pageIndex = 0;
-    void load();
+    pagination.value = { ...pagination.value, pageIndex: 0 };
   },
-  { immediate: true },
 );
 
+// One watcher triggers every load, so a table switch (which also resets the
+// page) queries once rather than twice. `settings.snapshot` is read through a
+// getter: on the store it is the unwrapped value, which watch() cannot track.
 watch(
-  [sorting, pagination, settings.snapshot],
+  [() => props.qualified, sorting, pagination, () => settings.snapshot],
   () => {
     void load();
   },
-  { deep: true },
+  { deep: true, immediate: true },
 );
 
 const table = useVueTable<Row>({
@@ -159,15 +174,14 @@ const pageCount = computed(() =>
 );
 
 function gotoPage(idx: number) {
-  pagination.value.pageIndex = Math.max(
-    0,
-    Math.min(idx, pageCount.value - 1),
-  );
+  pagination.value = {
+    ...pagination.value,
+    pageIndex: Math.max(0, Math.min(idx, pageCount.value - 1)),
+  };
 }
 
 function setPageSize(size: number) {
-  pagination.value.pageSize = size;
-  pagination.value.pageIndex = 0;
+  pagination.value = { pageIndex: 0, pageSize: size };
 }
 
 function reload() {

@@ -1,10 +1,6 @@
-import {
-  createRouter,
-  createWebHistory,
-  type RouteRecordRaw,
-} from "vue-router";
+import { createRouter, createWebHistory, type RouteRecordRaw } from "vue-router";
 
-const routes: RouteRecordRaw[] = [
+export const routes: RouteRecordRaw[] = [
   { path: "/", redirect: "/live" },
   {
     path: "/live",
@@ -24,9 +20,13 @@ const routes: RouteRecordRaw[] = [
     component: () => import("@/views/SettingsView.vue"),
     meta: { title: "Settings" },
   },
+  // The backend answers every unknown /demo/* path with index.html, so an
+  // unknown route must land somewhere instead of rendering an empty page.
+  { path: "/:pathMatch(.*)*", redirect: "/live" },
 ];
 
 export const router = createRouter({
-  history: createWebHistory("/demo/"),
+  // Vite's `base` (vite.config.ts), i.e. the /demo mount on the backend.
+  history: createWebHistory(import.meta.env.BASE_URL),
   routes,
 });
