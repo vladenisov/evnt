@@ -26,7 +26,7 @@ RUN mkdir -p dist && \
 FROM web-builder-${BUILD_DEMO} AS web-builder
 
 # --- Stage 2: runtime image ---
-FROM python:3.14.4-alpine3.23
+FROM python:3.14.8-alpine3.23
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.8-python3.14-alpine3.23 /usr/local/bin/uv /usr/local/bin/uv
 
