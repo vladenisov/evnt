@@ -3,6 +3,7 @@ name: Release
 # Publishes vladenisov/evnt on Docker Hub, multi-arch:
 #   push to main  -> :latest (what main.yml used to do)
 #   tag vX.Y.Z    -> :X.Y.Z and :X.Y
+#   manual run   -> package-version release from main, plus :latest
 # The full CI suite runs first, so an image is never published from red code.
 # This is also where CI runs for pushes to main; ci.yml itself only triggers on
 # pull requests, so a merge does not run the suite twice.
@@ -10,26 +11,77 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Expected backend version (X.Y.Z); must match backend/pyproject.toml'
+        required: true
+        type: string
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', inputs.version) || github.ref }}
   cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
+  metadata:
+    name: Validate release version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      sha: ${{ steps.release.outputs.sha }}
+      is_release: ${{ steps.release.outputs.is_release }}
+    steps:
+    - uses: actions/checkout@v6
+    - name: Test release validation
+      run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+    - name: Resolve version and immutable release target
+      id: release
+      env:
+        REQUESTED_VERSION: ${{ inputs.version }}
+      run: python3 .github/scripts/release_metadata.py
+
   ci:
+    needs: metadata
     uses: ./.github/workflows/ci.yml
+
+  tag:
+    name: Reserve release tag
+    needs: [metadata, ci]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v6
+      if: needs.metadata.outputs.is_release == 'true'
+      with:
+        ref: ${{ needs.metadata.outputs.sha }}
+    - name: Validate and create the tag after CI
+      if: needs.metadata.outputs.is_release == 'true'
+      env:
+        REQUESTED_VERSION: ${{ inputs.version }}
+        RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+        RELEASE_SHA: ${{ needs.metadata.outputs.sha }}
+      run: |
+        python3 .github/scripts/release_metadata.py
+        if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" > /dev/null; then
+          exit 0
+        fi
+        git tag "$RELEASE_TAG" "$RELEASE_SHA"
+        git push origin "refs/tags/$RELEASE_TAG"
 
   image:
     name: Build & push image
-    needs: ci
+    needs: [metadata, ci, tag]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
     - uses: actions/checkout@v6
       with:
+        ref: ${{ needs.metadata.outputs.sha }}
         submodules: true
 
     - uses: docker/setup-qemu-action@v4
@@ -49,8 +101,8 @@ jobs:
         flavor: latest=false
         tags: |
           type=raw,value=latest,enable={{is_default_branch}}
-          type=semver,pattern={{version}}
-          type=semver,pattern={{major}}.{{minor}}
+          type=semver,pattern={{version}},value=${{ needs.metadata.outputs.version }},enable=${{ needs.metadata.outputs.is_release == 'true' }}
+          type=semver,pattern={{major}}.{{minor}},value=${{ needs.metadata.outputs.version }},enable=${{ needs.metadata.outputs.is_release == 'true' }}
 
     - name: Build & push (linux/amd64, linux/arm64)
       uses: docker/build-push-action@v7
@@ -66,8 +118,8 @@ jobs:
 
   notes:
     name: Publish GitHub Release notes
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: image
+    if: needs.metadata.outputs.is_release == 'true'
+    needs: [metadata, image]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -75,9 +127,14 @@ jobs:
     - name: Create release from merged pull requests
       env:
         GH_TOKEN: ${{ github.token }}
+        RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+        RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
       run: |
-        if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+        if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
           exit 0
         fi
-        gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-          --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+        notes="Docker image: vladenisov/evnt:$RELEASE_VERSION (linux/amd64, linux/arm64).
+
+        [Upgrade guide](https://github.com/$GITHUB_REPOSITORY/blob/$RELEASE_TAG/website/docs/run/upgrading.md)"
+        gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+          --verify-tag --generate-notes --title "$RELEASE_TAG" --notes "$notes"

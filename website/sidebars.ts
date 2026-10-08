@@ -5,7 +5,7 @@ const sidebars: SidebarsConfig = {
     'index',
     'quickstart',
     {type: 'category', label: 'Integrate', items: ['integrate/trackers', 'integrate/http-api', 'integrate/encryption']},
-    {type: 'category', label: 'Run', items: ['run/docker', 'run/queue', 'run/demo', 'run/observability', 'run/upgrading', 'run/documentation']},
+    {type: 'category', label: 'Run', items: ['run/docker', 'run/queue', 'run/demo', 'run/observability', 'run/upgrading', 'run/documentation', 'run/releases']},
     {type: 'category', label: 'Configure', items: ['configure/settings', 'configure/security', 'configure/performance', 'configure/proxy']},
     'architecture',
     'contributing',

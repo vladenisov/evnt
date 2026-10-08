@@ -46,6 +46,7 @@ make dev-docs
 - [Architecture](website/docs/architecture.md)
 - [Development and testing](website/docs/contributing.md)
 - [Publish documentation on GitHub Pages](website/docs/run/documentation.md)
+- [Publish releases](website/docs/run/releases.md)
 - [Releases](https://github.com/vladenisov/evnt/releases)
 
 Settings use the `EVNT_` prefix and `__` nesting. See [`.env.example`](.env.example)

@@ -163,11 +163,11 @@ linux/amd64 and linux/arm64: `:latest` on every push to `main`, `:X.Y.Z` and
 a GitHub Release with notes generated from merged pull requests. Existing
 releases are preserved when a workflow is rerun.
 
-Bump `version` in `backend/pyproject.toml` before tagging. Use clear PR titles
-and descriptions: they are the source for the generated notes. Add migration
-instructions to [the upgrade guide](run/upgrading.md) for breaking changes,
-and make the breaking behavior explicit in the release notes before announcing
-the release.
+Use **Actions → Release → Run workflow** from `main` to publish the current
+package version. The workflow validates the requested version, runs CI,
+reserves its tag, and publishes the image and GitHub Release. See
+[Publishing releases](run/releases.md) for version bumps, the complete flow,
+release-note categories, and retries.
 
 ## Pull requests
 
