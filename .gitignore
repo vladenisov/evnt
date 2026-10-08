@@ -12,18 +12,20 @@ coverage.xml
 htmlcov/
 integration.xml
 
-# Build output
-/backend/build/
-/backend/dist/
+# Build output and dependency caches
+build/
+dist/
+node_modules/
+.pnpm-store/
+.bun/
+*.tsbuildinfo
 
 # Downloaded Snowplow tracker scripts (`evnt scripts download`), regenerated on
 # every image build. Only the vendored subtree: static/ is for our own assets.
 /backend/static/sp/
 
-# Frontend (frontend/.gitignore covers the rest)
-/frontend/node_modules/
-/frontend/dist/
-/frontend/coverage/
+# Frontend test coverage
+coverage/
 
 # Local configuration and secrets
 .env

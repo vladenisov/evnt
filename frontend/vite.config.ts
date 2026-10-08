@@ -3,7 +3,7 @@ import { defineConfig } from "vitest/config";
 import vue from "@vitejs/plugin-vue";
 
 // The collector the dev server forwards tracker traffic to. Point it elsewhere
-// with VITE_PROXY_TARGET=http://host:port pnpm dev.
+// with VITE_PROXY_TARGET=http://host:port bun run dev.
 const collector = process.env.VITE_PROXY_TARGET ?? "http://localhost:8000";
 const toCollector = { target: collector, changeOrigin: true };
 

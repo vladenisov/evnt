@@ -1,23 +1,25 @@
 # Contributing to evnt
 
 This file is the single source of truth for building, testing and linting. CI
-(`.github/workflows/ci.yml`) and the root `Makefile` run exactly these commands;
-if you change one, change all three.
+(`.github/workflows/ci.yml`) and the root `Makefile` use these commands.
+`make check` runs local lint, types, tests and the frontend build; CI also
+enforces coverage and requires integration tests. Keep all three aligned.
 
 ## Prerequisites
 
 - [uv](https://docs.astral.sh/uv/) for the backend. It installs the pinned
   Python (`backend/.python-version`, 3.14) itself.
-- Node 26 (`frontend/.node-version`) and pnpm at the version in
-  `frontend/package.json` `packageManager`, for the demo SPA.
+- Bun 1.4.2 (`frontend/.bun-version`, also pinned in `packageManager`) for
+  frontend dependencies, development and builds. Node 26
+  (`frontend/.node-version`) runs vue-tsc and Vitest with V8 coverage.
 - Docker with Compose v2, for the full stack and the integration tests.
 - The Iglu schemas submodule: `git submodule update --init --depth 1`.
 
 Never use `pip`, `poetry`, `npm` or `yarn` here: the lockfiles
-(`backend/uv.lock`, `frontend/pnpm-lock.yaml`) are what CI installs.
+(`backend/uv.lock`, `frontend/bun.lock`) are what CI installs.
 
 ```bash
-make install    # submodule + uv sync + pnpm install + pre-commit hooks
+make install    # submodule + uv sync + bun install --frozen-lockfile + pre-commit hooks
 make            # list every target
 ```
 
@@ -95,20 +97,24 @@ From `frontend/`, or from the root via `make`:
 
 | Gate | Command | Make |
 | --- | --- | --- |
-| Dev server | `pnpm dev` | `make dev-fe` |
-| Lint | `pnpm lint` (oxlint) | `make lint-fe` |
-| Types | `pnpm typecheck` (vue-tsc) | `make typecheck-fe` |
-| Tests | `pnpm test` (vitest) | `make test-fe` |
-| Build | `pnpm build` | `make build-fe` |
+| Dev server | `bun run dev` | `make dev-fe` |
+| Lint | `bun run lint` (oxlint) | `make lint-fe` |
+| Types | `bun run typecheck` (vue-tsc) | `make typecheck-fe` |
+| Tests | `bun run test` (vitest) | `make test-fe` |
+| Build | `bun run build` | `make build-fe` |
 
 The backend serves the production build under `/demo/`, so Vite builds with
-that base path. `pnpm build` writes `frontend/dist/`, which is what an API
+that base path. `bun run build` writes `frontend/dist/`, which is what an API
 started from `backend/` with `EVNT_COMMON__DEMO=true` serves.
+
+Use `bun run test`, not `bun test`: the suite uses Vitest and Vue transforms.
+vue-tsc requires Node compiler hooks; Vitest uses Node for V8 coverage.
+`bun run build` runs Vite on Bun; `make check` also runs typechecking first.
 
 ## Coverage
 
 Backend: `uv run pytest --cov=evnt`, floor in `[tool.coverage.report]
-fail_under` in `backend/pyproject.toml`. Frontend: `pnpm test:coverage`, with
+fail_under` in `backend/pyproject.toml`. Frontend: `bun run test:coverage`, with
 thresholds in `vite.config.ts`. Floors only go up: raise them when coverage
 rises, never lower them to get a change through.
 
@@ -119,7 +125,7 @@ make image      # docker build -t evnt:local .
 ```
 
 Build args: `EXTRAS` (space-separated optional dependencies, e.g.
-`"apm sentry crypto"`) and `BUILD_DEMO=false` to skip the Node stage. The build
+`"apm sentry crypto"`) and `BUILD_DEMO=false` to skip the Bun stage. The build
 fails on purpose when the Iglu submodule is not checked out: without the
 schemas, validation would silently be skipped.
 

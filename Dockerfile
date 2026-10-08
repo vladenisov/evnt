@@ -13,19 +13,17 @@
 
 ARG BUILD_DEMO=true
 ARG PYTHON_IMAGE=python:3.14-alpine3.23
+ARG BUN_VERSION=1.4.2
 
 # ---- demo SPA -> /web/dist ----
-# Node matches frontend/.node-version. Node 25+ no longer bundles corepack, so
-# pnpm is installed at the exact version package.json "packageManager" pins.
-FROM node:26-alpine AS demo-true
+# Bun matches frontend/.bun-version and package.json "packageManager".
+FROM oven/bun:${BUN_VERSION}-alpine AS demo-true
 WORKDIR /web
-# The [l] glob makes pnpm-workspace.yaml optional instead of a hard COPY error.
-COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yam[l] ./
-RUN npm install --global "$(node -p 'require("./package.json").packageManager')"
-RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
-    pnpm install --frozen-lockfile --store-dir /pnpm/store
+COPY frontend/package.json frontend/bun.lock ./
+RUN --mount=type=cache,id=bun-cache,target=/root/.bun/install/cache \
+    bun install --frozen-lockfile
 COPY frontend/ ./
-RUN pnpm build
+RUN bun run build
 
 FROM alpine:3 AS demo-false
 RUN mkdir -p /web/dist && printf '%s\n' \

@@ -15,8 +15,8 @@ This file is the fast operational guide for agents. Build, test and lint command
 
 ## Toolchain Rules
 
-- Backend: `uv` only (`backend/uv.lock`). Frontend: `pnpm` only (`frontend/pnpm-lock.yaml`). Never `pip`, `poetry`, `npm` or `yarn`: the lockfiles drift from CI.
-- Run backend commands from `backend/` (`uv run pytest`, `uv run evnt ...`), or use the root `Makefile` (`make check` runs every gate CI runs).
+- Backend: `uv` only (`backend/uv.lock`). Frontend: `bun` only (`frontend/bun.lock`). Never `pip`, `poetry`, `npm` or `yarn`: the lockfiles drift from CI.
+- Run backend commands from `backend/` (`uv run pytest`, `uv run evnt ...`), or use the root `Makefile` (`make check` runs the local gates; CI also requires integration tests and coverage).
 - The CLI is the `evnt` console script (`uv run evnt settings`, `evnt db init`, `evnt queue worker`, `evnt queue healthcheck`, `evnt scripts download`, `evnt keys generate`). There is no `cli.py` to run by path.
 
 ## Layout
@@ -37,7 +37,7 @@ backend/
     ingest/rabbitmq.py           publisher + batch worker
     middleware/, observability/  raw-ASGI middleware; logging, tracing, APM
     tests/                       mirrors the package; tests/integration needs real backends
-frontend/                        Vue 3 demo SPA (Vite, pnpm), served at /demo/
+frontend/                        Vue 3 demo SPA (Vite, Bun), served at /demo/
 deploy/clickhouse/               ClickHouse config mounted by compose.yml
 Dockerfile, compose.yml, Makefile
 ```

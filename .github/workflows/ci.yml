@@ -121,31 +121,30 @@ jobs:
     steps:
     - uses: actions/checkout@v6
 
-    # The pnpm version comes from package.json "packageManager".
-    - uses: pnpm/action-setup@v4
+    - uses: oven-sh/setup-bun@v2
       with:
-        package_json_file: frontend/package.json
+        bun-version-file: frontend/.bun-version
 
+    # vue-tsc's compiler hooks and Vitest's V8 coverage need Node.
+    # Vite development and production builds run on Bun.
     - uses: actions/setup-node@v5
       with:
         node-version-file: frontend/.node-version
-        cache: pnpm
-        cache-dependency-path: frontend/pnpm-lock.yaml
 
     - name: Install dependencies
-      run: pnpm install --frozen-lockfile
+      run: bun install --frozen-lockfile
 
     - name: Lint
-      run: pnpm lint
+      run: bun run lint
 
     - name: Typecheck
-      run: pnpm typecheck
+      run: bun run typecheck
 
     - name: Test (with coverage)
-      run: pnpm test:coverage
+      run: bun run test:coverage
 
     - name: Build
-      run: pnpm build
+      run: bun run build
 
   image:
     name: Build the image (no push)

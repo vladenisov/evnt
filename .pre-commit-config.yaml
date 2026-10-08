@@ -23,4 +23,3 @@ repos:
   hooks:
   - id: pretty-format-yaml
     args: [--autofix, --preserve-quotes, --indent=2]
-    exclude: ^frontend/pnpm-lock\.yaml$

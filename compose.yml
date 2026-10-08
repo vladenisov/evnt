@@ -13,7 +13,7 @@ x-evnt-image: &evnt-image
     args:
       # Space-separated optional extras, e.g. "apm sentry crypto".
       EXTRAS: "${EVNT_BUILD_EXTRAS:-}"
-      # "false" skips the Node stage; /demo then serves a placeholder page.
+      # "false" skips the Bun stage; /demo then serves a placeholder page.
       BUILD_DEMO: "${EVNT_BUILD_DEMO:-true}"
   image: evnt:dev
 

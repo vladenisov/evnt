@@ -15,3 +15,9 @@ backend/src/evnt/tests/
 frontend/node_modules/
 frontend/dist/
 frontend/coverage/
+**/.bun/
+**/*.tsbuildinfo
+**/.env
+**/.env.*
+**/.secrets.*
+**/*.log

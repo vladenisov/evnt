@@ -88,6 +88,35 @@ def test_get_pixel_lands_in_clickhouse(tables, ch, database):
     assert _rows_for(ch, database, app_id) == [(app_id, "web", "pv")]
 
 
+def test_sync_insert_overrides_async_client_defaults(tables, ch, database, monkeypatch):
+    from evnt.main import create_app
+
+    real_get_async_client = clickhouse.get_async_client
+
+    async def get_client_with_async_defaults(**kwargs):
+        return await real_get_async_client(
+            **kwargs,
+            settings={
+                "async_insert": 1,
+                "wait_for_async_insert": 0,
+                "async_insert_busy_timeout_ms": 60000,
+                "async_insert_use_adaptive_busy_timeout": 0,
+            },
+        )
+
+    monkeypatch.setattr(clickhouse, "get_async_client", get_client_with_async_defaults)
+    monkeypatch.setattr(settings.ingest.direct, "async_insert", False)
+    app_id = f"it-sync-{uuid.uuid4().hex[:8]}"
+    with TestClient(create_app()) as client:
+        response = client.post(
+            settings.common.snowplow.endpoints.post_endpoint, json=_payload(app_id)
+        )
+        assert response.status_code == 204
+        # A successful synchronous response means the row is already visible,
+        # even when the connection would otherwise buffer inserts for a minute.
+        assert _rows_for(ch, database, app_id, timeout=0) == [(app_id, "web", "pv")]
+
+
 def test_rabbitmq_worker_delivers_published_events(
     tables,
     rabbitmq_settings,

@@ -26,8 +26,8 @@ async function refresh() {
     // Keep the selection pointing at a table that exists: after switching
     // database the old choice would query a table that is not there.
     const names = result.map((t) => `${t.database}.${t.name}`);
-    const [first] = names;
-    if (first !== undefined && !names.includes(props.modelValue)) {
+    const first = names[0] ?? "";
+    if (!names.includes(props.modelValue) && props.modelValue !== first) {
       emit("update:modelValue", first);
     }
   } catch (e) {

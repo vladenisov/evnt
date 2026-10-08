@@ -54,6 +54,17 @@ describe("TableSelector", () => {
     expect(wrapper.emitted("update:modelValue")).toEqual([["other.a"]]);
   });
 
+  it("clears the previous selection when the new database has no tables", async () => {
+    listTables.mockResolvedValue([table("evnt", "local")]);
+    const wrapper = mount(TableSelector, { props: { modelValue: "evnt.local" } });
+    await flushPromises();
+    listTables.mockResolvedValue([]);
+    useSettings().database = "empty";
+    await flushPromises();
+    expect(wrapper.text()).toContain("No tables");
+    expect(wrapper.emitted("update:modelValue")).toEqual([[""]]);
+  });
+
   it("ignores a refresh that finishes after a newer one", async () => {
     const slow = deferred<TableInfo[]>();
     listTables.mockReturnValueOnce(slow.promise);

@@ -4,4 +4,4 @@
 - **[CONTRIBUTING.md](CONTRIBUTING.md)**: every build, test and lint command, the single source of truth that CI and the `Makefile` follow.
 - **[README.md](README.md)**: user-facing configuration (`EVNT_*` settings) and the endpoint reference.
 
-The rule worth repeating: the backend uses `uv` (`backend/uv.lock`) and the frontend uses `pnpm` (`frontend/pnpm-lock.yaml`). Never use `pip`, `poetry`, `npm` or `yarn`, or the lockfiles drift from CI. `make check` runs every gate CI runs.
+The rule worth repeating: the backend uses `uv` (`backend/uv.lock`) and the frontend uses `bun` (`frontend/bun.lock`). Never use `pip`, `poetry`, `npm` or `yarn`, or the lockfiles drift from CI. `make check` runs the local gates; CI also requires integration tests and coverage.

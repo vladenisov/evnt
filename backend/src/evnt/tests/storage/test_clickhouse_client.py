@@ -25,7 +25,7 @@ class _FakeClient:
 @pytest.mark.parametrize(
     ("config", "require_wait", "expected"),
     [
-        (DirectInsertConfig(async_insert=False), True, {}),
+        (DirectInsertConfig(async_insert=False), True, {"async_insert": 0}),
         (
             DirectInsertConfig(async_insert=True, wait_for_async_insert=False),
             False,

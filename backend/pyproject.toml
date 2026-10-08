@@ -110,5 +110,6 @@ omit = ["*/evnt/tests/*"]
 [tool.coverage.report]
 # A ratchet: raise it when coverage rises, never lower it to get a red run
 # through. pytest-cov reads it, so CI passes no --cov-fail-under of its own.
-fail_under = 0
+# Measured with all extras, unit tests only: 86.8% on 2026-10-08.
+fail_under = 86
 skip_empty = true

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+- Frontend dependency installation, development and production builds use pinned Bun 1.4.2 with `bun.lock`, including CI and Docker. vue-tsc and Vitest keep Node for compiler hooks and V8 coverage.
+- Backend coverage now has an enforced 86% floor, based on the measured unit-test coverage.
+
 ### Breaking
 - **Repository layout**: the service is now the `evnt` package under `backend/src/evnt` (src layout, tests inside the package) and the demo SPA lives in `frontend/`. Anything that imported modules by their old paths (`core.*`, `routers.*`, `evnt.core.*`) must use the new ones (`evnt.config`, `evnt.api.*`, `evnt.tracker.*`, `evnt.storage.clickhouse.*`).
 - **Container port 80 → 8000**, and the image runs as the unprivileged `evnt` user (uid 1000) under tini. Update port mappings and load-balancer targets.
@@ -16,7 +20,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Fixed
 - `GET /i` rejected real tracker pixels with 422: `eid`, `dtm`, `stm` and `rtm` were treated as required query parameters, and trackers never send `rtm`. Missing values now get their defaults.
 - `evnt db init` created a database named after the table group (`evnt`) instead of `EVNT_CLICKHOUSE__CONFIGURATION__DATABASE`, so any other database name failed.
-- `EVNT_INGEST__DIRECT__ASYNC_INSERT=false` had no effect: inserts stayed asynchronous.
+- `EVNT_INGEST__DIRECT__ASYNC_INSERT=false` explicitly disables buffering, even when the ClickHouse connection defaults enable async inserts.
+- The demo clears the selected table when switching to an empty database, instead of querying the previous database.
+- `make check` now includes the frontend production build.
 - `evnt settings` crashed on output.
 - The proxy's HTTP client was never closed on shutdown.
 - `/proxy/hash` URLs for multi-segment paths (`gtag/js?id=...`) could not be served by `/proxy/route`.

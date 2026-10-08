@@ -24,7 +24,9 @@ def insert_settings(config: DirectInsertConfig, *, require_wait: bool = False) -
     has merely buffered.
     """
     if not config.async_insert:
-        return {}
+        # Override a server/user default too: leaving this unset could make
+        # the worker acknowledge an insert that ClickHouse only buffered.
+        return {"async_insert": 0}
     return {
         "async_insert": 1,
         "wait_for_async_insert": int(config.wait_for_async_insert or require_wait),

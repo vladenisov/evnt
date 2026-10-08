@@ -13,8 +13,8 @@ with Vite `base: "/demo/"`, and the router takes its base from the same value.
 
 ## Requirements
 
-- Node 26 (`.node-version`) and pnpm 11 (pinned in `package.json`
-  `packageManager`).
+- Bun 1.4.2 (`.bun-version`, pinned in `package.json` `packageManager`).
+- Node 26 (`.node-version`) for vue-tsc and Vitest with V8 coverage.
 - A running collector with the tracker downloaded (`evnt scripts download`
   puts it under `static/sp`).
 - ClickHouse reachable from the browser with CORS enabled; the configs in
@@ -25,24 +25,27 @@ with Vite `base: "/demo/"`, and the router takes its base from the same value.
 ## Development
 
 ```sh
-pnpm install
-pnpm dev            # http://localhost:5173/demo/
+bun install --frozen-lockfile
+bun run dev            # http://localhost:5173/demo/
 ```
 
 The tracker sends to the page's own origin, so the dev server proxies the
 collector paths (`/tracker`, `/i`, `/e`, `/e.js`, `/static/`) to
 `http://localhost:8000`. Point it at another collector with
-`VITE_PROXY_TARGET=http://host:port pnpm dev`. ClickHouse is not proxied; the
+`VITE_PROXY_TARGET=http://host:port bun run dev`. ClickHouse is not proxied; the
 browser talks to the URL on the Settings tab (default `http://localhost:8123`).
 
 ## Scripts
 
 | Script               | What it does                                       |
 | -------------------- | -------------------------------------------------- |
-| `pnpm dev`           | Vite dev server with the collector proxy           |
-| `pnpm build`         | Type-check (`vue-tsc -b`) and build into `dist/`   |
-| `pnpm preview`       | Serve the production build locally                 |
-| `pnpm lint`          | oxlint, warnings fail                              |
-| `pnpm typecheck`     | `vue-tsc -b` over the app, tests and Vite config   |
-| `pnpm test`          | Vitest (happy-dom)                                 |
-| `pnpm test:coverage` | Vitest with v8 coverage and per-directory floors   |
+| `bun run dev`           | Vite dev server with the collector proxy           |
+| `bun run build`         | Build with Vite on Bun into `dist/`                |
+| `bun run preview`       | Serve the production build locally                 |
+| `bun run lint`          | oxlint, warnings fail                              |
+| `bun run typecheck`     | `vue-tsc -b` over the app, tests and Vite config   |
+| `bun run test`          | Vitest (happy-dom)                                 |
+| `bun run test:coverage` | Vitest with v8 coverage and per-directory floors   |
+
+Dev and build run on Bun. vue-tsc and Vitest use Node; tests keep V8 coverage;
+run `bun run test`, not the separate `bun test` runner.

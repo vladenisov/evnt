@@ -1,7 +1,7 @@
 # evnt: convenience commands. Run `make` (or `make help`) for the list.
 #
-# The backend uses uv (backend/, uv.lock); the frontend uses pnpm (frontend/,
-# pnpm-lock.yaml). Targets cd into the right subproject, so everything runs
+# The backend uses uv (backend/, uv.lock); the frontend uses Bun (frontend/,
+# bun.lock). Targets cd into the right subproject, so everything runs
 # from the repo root. They wrap the exact commands CI runs and CONTRIBUTING.md
 # documents; nothing here changes how the tools are invoked.
 
@@ -26,8 +26,8 @@ install-be: ## Install backend deps with every extra (CI parity) and the iglu-ce
 	git -C $(ROOT) submodule update --init --depth 1
 	cd $(BACKEND) && uv sync --all-extras
 
-install-fe: ## Install frontend deps (pnpm install)
-	cd $(FRONTEND) && pnpm install
+install-fe: ## Install frontend deps (bun install --frozen-lockfile)
+	cd $(FRONTEND) && bun install --frozen-lockfile
 
 install-hooks: ## Install the pre-commit hooks
 	cd $(BACKEND) && uv run pre-commit install --config $(ROOT)/.pre-commit-config.yaml
@@ -42,14 +42,14 @@ dev-be: ## Run just the API with reload (needs ClickHouse on localhost:8123)
 		uv run uvicorn evnt.main:app --reload --port 8000
 
 dev-fe: ## Run just the demo SPA dev server (Vite)
-	cd $(FRONTEND) && pnpm dev
+	cd $(FRONTEND) && bun run dev
 
 db-init: ## Create the ClickHouse tables in the compose stack
 	docker compose -f $(ROOT)/compose.yml run --rm app evnt db init
 
 ##@ Quality gates
 .PHONY: check lint lint-be lint-fe format typecheck typecheck-be typecheck-fe test test-be test-fe build-fe
-check: lint typecheck test ## Run every gate (lint + typecheck + tests), CI parity
+check: lint typecheck test build-fe ## Run local gates (lint + types + tests + production build)
 
 lint: lint-be lint-fe ## Lint backend + frontend
 
@@ -57,7 +57,7 @@ lint-be: ## Lint backend (ruff check + format --check)
 	cd $(BACKEND) && uv run ruff check && uv run ruff format --check
 
 lint-fe: ## Lint frontend (oxlint)
-	cd $(FRONTEND) && pnpm lint
+	cd $(FRONTEND) && bun run lint
 
 format: ## Auto-format backend (ruff format + safe fixes)
 	cd $(BACKEND) && uv run ruff check --fix && uv run ruff format
@@ -68,7 +68,7 @@ typecheck-be: ## Type-check backend (mypy --strict)
 	cd $(BACKEND) && uv run mypy
 
 typecheck-fe: ## Type-check frontend
-	cd $(FRONTEND) && pnpm typecheck
+	cd $(FRONTEND) && bun run typecheck
 
 test: test-be test-fe ## Run backend + frontend tests
 
@@ -76,10 +76,10 @@ test-be: ## Run backend tests. Extra args: make test-be ARGS="-k proxy -v"
 	cd $(BACKEND) && uv run pytest $(ARGS)
 
 test-fe: ## Run frontend tests. Extra args: make test-fe ARGS=clickhouse
-	cd $(FRONTEND) && pnpm test $(ARGS)
+	cd $(FRONTEND) && bun run test $(ARGS)
 
 build-fe: ## Production build of the demo SPA
-	cd $(FRONTEND) && pnpm build
+	cd $(FRONTEND) && bun run build
 
 ##@ Docker
 .PHONY: image
