@@ -1,0 +1,54 @@
+name: Publish docs
+
+# One-time repository setup: Settings -> Pages -> Source = GitHub Actions.
+# PR builds run in ci.yml; this workflow publishes the project site.
+on:
+  push:
+    branches: [main]
+    paths:
+    - 'website/**'
+    - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read
+    defaults:
+      run:
+        working-directory: website
+    steps:
+    - uses: actions/checkout@v6
+    - uses: oven-sh/setup-bun@v2
+      with:
+        bun-version-file: website/package.json
+    - run: bun install --frozen-lockfile
+    - run: bun run typecheck
+    - run: bun run build
+    - uses: actions/configure-pages@v5
+    - uses: actions/upload-pages-artifact@v4
+      with:
+        path: website/build
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+    - id: deployment
+      uses: actions/deploy-pages@v4
