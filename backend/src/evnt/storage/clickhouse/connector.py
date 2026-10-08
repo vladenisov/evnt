@@ -1,0 +1,272 @@
+"""Row sink that writes event batches to ClickHouse."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+from uuid import UUID
+
+import structlog
+from clickhouse_connect.driver.exceptions import ClickHouseError, DatabaseError
+
+from evnt.constants import CLICKHOUSE_ASYNC_SETTINGS, DEFAULT_TABLE_GROUP
+from evnt.observability.tracing import async_capture_span
+from evnt.storage.clickhouse.schema import ColumnDef, TupleColumnDef, get_fields_for_table_group
+
+if TYPE_CHECKING:
+    from clickhouse_connect.driver.asyncclient import AsyncClient
+    from clickhouse_connect.driver.query import QueryResult
+
+logger = structlog.get_logger(__name__)
+
+# Explicit all-zero UUID written for non-Nullable UUID columns that are missing.
+_ZERO_UUID = UUID(int=0)
+
+
+@dataclass(frozen=True, slots=True)
+class _InsertBatchMetadata:
+    """Static ClickHouse insert details for a table group."""
+
+    full_table_name: str
+    fields: tuple[ColumnDef | TupleColumnDef, ...]
+    column_names: list[str]
+    column_types: list[Any]
+
+
+class ClickHouseConnector:
+    """Writes event rows to ClickHouse and runs DDL for ``TableManager``.
+
+    The keyword arguments match ``ClickHouseConfiguration``, so callers pass
+    ``**settings.clickhouse.configuration.model_dump()``.
+    """
+
+    def __init__(
+        self,
+        conn: AsyncClient,
+        *,
+        tables: dict[str, Any],
+        database: str = "evnt",
+        cluster_name: str | None = None,
+        insert_settings: dict[str, int] | None = None,
+    ) -> None:
+        """
+        Args:
+            conn: Open async ClickHouse client; the caller owns closing it.
+            tables: Table-group definitions (``ClickHouseConfiguration.tables``).
+            database: Database the tables live in.
+            cluster_name: Cluster for ``ON CLUSTER`` DDL and Distributed tables.
+            insert_settings: Settings sent with every insert. ``None`` means
+                async inserts; an empty dict means plain synchronous inserts.
+        """
+        self.conn = conn
+        self.cluster = cluster_name
+        self.cluster_condition = self._make_on_cluster(cluster_name)
+        self.database = database
+        self.tables = tables
+        self.insert_settings = (
+            dict(CLICKHOUSE_ASYNC_SETTINGS) if insert_settings is None else insert_settings
+        )
+        self._insert_metadata_cache: dict[str, _InsertBatchMetadata] = {}
+
+    @staticmethod
+    def _make_on_cluster(cluster_name: str | None = None) -> str:
+        """
+        Create the ON CLUSTER clause for ClickHouse queries.
+
+        Args:
+            cluster_name: The cluster name
+
+        Returns:
+            The ON CLUSTER clause or empty string
+        """
+        if not cluster_name:
+            return ""
+        return f"ON CLUSTER {cluster_name}"
+
+    async def get_full_table_name(self, table_name: str) -> str:
+        """
+        Get the fully qualified table name.
+
+        Args:
+            table_name: The table name
+
+        Returns:
+            The fully qualified table name
+        """
+        if "." in table_name:
+            return table_name
+        return f"{self.database}.{table_name}"
+
+    async def command(self, query: str) -> None:
+        """
+        Execute a ClickHouse command.
+
+        Args:
+            query: The query to execute
+        """
+        try:
+            await self.conn.command(query)
+        except (ClickHouseError, DatabaseError) as e:
+            logger.error("Database command failed", error=str(e), query=query)
+            raise
+
+    async def query(
+        self,
+        query: str,
+        parameters: dict[str, Any] | None = None,
+    ) -> QueryResult:
+        """
+        Execute a ClickHouse query.
+
+        Args:
+            query: The query to execute
+            parameters: Optional query parameters
+
+        Returns:
+            The query results
+        """
+        try:
+            result: QueryResult = await self.conn.query(query, parameters=parameters)
+            return result
+        except (ClickHouseError, DatabaseError) as e:
+            logger.error(
+                "Database query failed",
+                error=str(e),
+                query=query,
+                parameters=parameters,
+            )
+            raise
+
+    async def get_table_name(self, table_group: str = DEFAULT_TABLE_GROUP) -> str:
+        """
+        Get the table name for a specific group.
+
+        Args:
+            table_group: The table group
+
+        Returns:
+            The table name
+        """
+        kind = "distributed" if self.cluster else "local"
+        return str(self.tables[table_group][kind]["name"])
+
+    async def _get_insert_metadata(
+        self,
+        table_group: str,
+    ) -> _InsertBatchMetadata:
+        """Resolve and cache static insert metadata for a table group."""
+
+        if table_group in self._insert_metadata_cache:
+            return self._insert_metadata_cache[table_group]
+
+        table_name = await self.get_table_name(table_group)
+        full_table_name = await self.get_full_table_name(table_name)
+        fields = tuple(
+            field
+            for field in get_fields_for_table_group(table_group)
+            if isinstance(field, TupleColumnDef) or field.payload_name is not None
+        )
+
+        metadata = _InsertBatchMetadata(
+            full_table_name=full_table_name,
+            fields=fields,
+            column_names=[field.name for field in fields],
+            column_types=[field.type for field in fields],
+        )
+        self._insert_metadata_cache[table_group] = metadata
+        return metadata
+
+    @async_capture_span()
+    async def insert_rows(
+        self,
+        rows: list[dict[str, Any]],
+        table_group: str = DEFAULT_TABLE_GROUP,
+    ) -> None:
+        """
+        Insert rows into the specified table group in a single batch request.
+
+        Args:
+            rows: List of rows to insert
+            table_group: The table group
+        """
+        await self.insert_batch(rows, table_group=table_group)
+
+    @staticmethod
+    def _sanitize_clickhouse_value(type_name: str, value: Any) -> Any:
+        """Coerce ``None`` into an explicit, type-correct default for non-Nullable columns.
+
+        Several non-Nullable columns are optional in the payload models (e.g.
+        ``device_id`` / ``session_id`` are ``UUID | None``). Rather than relying
+        on the driver to silently zero-fill, map ``None`` to the column type's
+        zero value explicitly.
+
+        NOTE: a missing ``device_id`` becomes the all-zero UUID, which is also
+        the ``SAMPLE BY``/``ORDER BY`` key (``cityHash64(device_id)``); all
+        anonymous events therefore share one sample-key value. Changing that is
+        a sampling-design decision, out of scope for value sanitization.
+        """
+
+        if type_name == "UUID":
+            if value in (None, ""):
+                value = _ZERO_UUID
+            elif isinstance(value, str):
+                value = UUID(value)
+            return value
+        if type_name == "String" or type_name.startswith("LowCardinality(String"):
+            return "" if value is None else value
+        return value
+
+    async def insert_batch(
+        self,
+        rows: list[dict[str, Any]],
+        table_group: str = DEFAULT_TABLE_GROUP,
+    ) -> None:
+        """Insert a batch of rows in a single ClickHouse request."""
+
+        if not rows:
+            logger.debug("No rows to insert")
+            return
+
+        metadata = await self._get_insert_metadata(table_group)
+        data: list[list[Any]] = []
+
+        for row in rows:
+            values: list[Any] = []
+            for field in metadata.fields:
+                if isinstance(field, TupleColumnDef):
+                    value = tuple(
+                        self._sanitize_clickhouse_value(
+                            v.type_name,
+                            row.get(v.payload_name),
+                        )
+                        for v in field.elements
+                        if v.payload_name is not None
+                    )
+                else:
+                    # Only fields with a payload name are in metadata.fields.
+                    assert field.payload_name is not None
+                    value = self._sanitize_clickhouse_value(
+                        field.type_name,
+                        row.get(field.payload_name),
+                    )
+                values.append(value)
+            data.append(values)
+
+        async with async_capture_span("clickhouse_query"):
+            try:
+                await self.conn.insert(
+                    metadata.full_table_name,
+                    data=data,
+                    column_names=metadata.column_names,
+                    column_types=metadata.column_types,
+                    settings=self.insert_settings,
+                )
+            except (ClickHouseError, DatabaseError) as e:
+                logger.error(
+                    "Insert operation failed",
+                    error=str(e),
+                    table_name=metadata.full_table_name,
+                    rows_count=len(rows),
+                    column_names=metadata.column_names,
+                )
+                raise

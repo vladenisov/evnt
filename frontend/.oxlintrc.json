@@ -1,0 +1,23 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "vue", "oxc", "import", "vitest"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error"
+  },
+  "env": {
+    "browser": true,
+    "builtin": true
+  },
+  "ignorePatterns": ["dist", "coverage"],
+  "rules": {
+    "no-unused-vars": "error",
+    "no-empty": "error",
+    "typescript/ban-ts-comment": "error",
+    "typescript/no-explicit-any": "error",
+    "typescript/no-non-null-asserted-optional-chain": "error",
+    "import/no-cycle": "error",
+    "vitest/require-mock-type-parameters": "off",
+    "import/no-unassigned-import": ["error", { "allow": ["**/*.css"] }]
+  }
+}

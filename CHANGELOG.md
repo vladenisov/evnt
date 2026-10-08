@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+- Frontend dependency installation, development and production builds use pinned Bun 1.4.2 with `bun.lock`, including CI and Docker. vue-tsc and Vitest keep Node for compiler hooks and V8 coverage.
+- Backend coverage now has an enforced 86% floor, based on the measured unit-test coverage.
+
+### Breaking
+- **Repository layout**: the service is now the `evnt` package under `backend/src/evnt` (src layout, tests inside the package) and the demo SPA lives in `frontend/`. Anything that imported modules by their old paths (`core.*`, `routers.*`, `evnt.core.*`) must use the new ones (`evnt.config`, `evnt.api.*`, `evnt.tracker.*`, `evnt.storage.clickhouse.*`).
+- **Container port 80 → 8000**, and the image runs as the unprivileged `evnt` user (uid 1000) under tini. Update port mappings and load-balancer targets.
+- **CLI**: `python cli.py ...` is replaced by the `evnt` console script (`evnt settings`, `evnt db init`, `evnt queue worker`, `evnt queue healthcheck`, `evnt scripts download`, `evnt keys generate|public`). Commands and arguments are unchanged.
+- **Removed settings**: `EVNT_COMMON__DEBUG`, `EVNT_PERFORMANCE__DB_POOL_OVERFLOW` and `EVNT_PROXY__PATHS` had no effect and are gone. `EVNT_PROXY__PATHS` never restricted what the proxy fetches; it only decided which URLs `/proxy/hash` rewrote, and produced links the proxy then refused.
+- **Removed**: the unregistered SendGrid handler, and the `json-repair` dependency (its model hook never ran: FastAPI parses request bodies itself, so malformed JSON was already a 422).
+
+### Fixed
+- `GET /i` rejected real tracker pixels with 422: `eid`, `dtm`, `stm` and `rtm` were treated as required query parameters, and trackers never send `rtm`. Missing values now get their defaults.
+- `evnt db init` created a database named after the table group (`evnt`) instead of `EVNT_CLICKHOUSE__CONFIGURATION__DATABASE`, so any other database name failed.
+- `EVNT_INGEST__DIRECT__ASYNC_INSERT=false` explicitly disables buffering, even when the ClickHouse connection defaults enable async inserts.
+- The demo clears the selected table when switching to an empty database, instead of querying the previous database.
+- `make check` now includes the frontend production build.
+- `evnt settings` crashed on output.
+- The proxy's HTTP client was never closed on shutdown.
+- `/proxy/hash` URLs for multi-segment paths (`gtag/js?id=...`) could not be served by `/proxy/route`.
+- `EVNT_PROMETHEUS__METRICS_PATH` was not applied.
+- `EVNT_COMMON__STATIC_DIR` and `EVNT_COMMON__DEMO_DIR` are now real settings, so `/static` and `/demo` work regardless of the working directory.
+
+### Added
+- The image has a `HEALTHCHECK` (on `/live`).
+- `EVNT_COMMON__SNOWPLOW__IGLU_SCHEMAS_DIR` for the Iglu schema location; the image build fails when the schemas submodule is missing instead of shipping with validation silently off.
+- Integration tests against real ClickHouse and RabbitMQ, required in CI.
+- CI on pull requests (backend ruff/mypy/pytest, integration, frontend lint/typecheck/test/build, image build), gating the Docker Hub release. Previously the image was pushed from `main` with no tests.
+- Root `Makefile`, `CONTRIBUTING.md`, strict mypy and an expanded ruff rule set.
+
 ### Security
 - **CORS collector default**: `EVNT_SECURITY__CORS_ALLOW_CREDENTIALS` defaults to `true` with `EVNT_SECURITY__CORS_ALLOWED_ORIGINS='["*"]'`, so tracker requests using browser credentials work out of the box. Wildcard origins are implemented by reflecting the request `Origin`, not by returning `Access-Control-Allow-Origin: *`.
 - **API docs disabled by default**: `EVNT_SECURITY__DISABLE_DOCS` now defaults to `true`, so `/docs`, `/redoc` and `/openapi.json` are off. Set it to `false` to re-enable.

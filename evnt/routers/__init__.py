@@ -1,3 +1,0 @@
-"""
-Routers module for evnt.
-"""

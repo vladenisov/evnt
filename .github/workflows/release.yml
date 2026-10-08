@@ -1,0 +1,65 @@
+name: Release
+
+# Publishes vladenisov/evnt on Docker Hub, multi-arch:
+#   push to main  -> :latest (what main.yml used to do)
+#   tag vX.Y.Z    -> :X.Y.Z and :X.Y
+# The full CI suite runs first, so an image is never published from red code.
+# This is also where CI runs for pushes to main; ci.yml itself only triggers on
+# pull requests, so a merge does not run the suite twice.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  image:
+    name: Build & push image
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+
+    - uses: docker/setup-qemu-action@v4
+
+    - uses: docker/setup-buildx-action@v4
+
+    - uses: docker/login-action@v4
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Compute tags & labels
+      id: meta
+      uses: docker/metadata-action@v6
+      with:
+        images: vladenisov/evnt
+        flavor: latest=false
+        tags: |
+          type=raw,value=latest,enable={{is_default_branch}}
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+
+    - name: Build & push (linux/amd64, linux/arm64)
+      uses: docker/build-push-action@v7
+      with:
+        context: .
+        target: runtime
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
