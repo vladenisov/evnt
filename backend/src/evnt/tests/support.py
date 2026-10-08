@@ -38,6 +38,9 @@ def build_app(monkeypatch):
     """Build a real app with the production lifespan patched out."""
     main_module = importlib.import_module("evnt.main")
     monkeypatch.setattr(main_module, "lifespan", no_op_lifespan)
+    # Importing main already configures process-wide logging. Repeated app
+    # factories must not keep adding console handlers or alter pytest's capture.
+    monkeypatch.setattr(main_module, "init_logging", lambda *_args: None)
     return main_module.create_app()
 
 

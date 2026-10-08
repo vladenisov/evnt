@@ -18,8 +18,12 @@ const table = (database: string, name: string, total_rows: number | null = 1): T
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((r) => (resolve = r));
-  return { promise, resolve };
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 beforeEach(() => {
@@ -85,5 +89,56 @@ describe("TableSelector", () => {
     await flushPromises();
     expect(wrapper.text()).toContain("Failed to fetch");
     expect(wrapper.text()).toContain("No tables");
+  });
+
+  it("ignores an old connection error after a newer refresh succeeds", async () => {
+    const old = deferred<TableInfo[]>();
+    listTables.mockReturnValueOnce(old.promise);
+    const wrapper = mount(TableSelector, { props: { modelValue: "new.t" } });
+    listTables.mockResolvedValueOnce([table("new", "t")]);
+    useSettings().database = "new";
+    await flushPromises();
+    old.reject(new Error("old connection failed"));
+    await flushPromises();
+    expect(wrapper.text()).toContain("new.t");
+    expect(wrapper.find(".err").exists()).toBe(false);
+    expect(wrapper.emitted("update:modelValue")).toBeUndefined();
+  });
+
+  it("keeps controls disabled while the newest refresh is pending", async () => {
+    const old = deferred<TableInfo[]>();
+    const current = deferred<TableInfo[]>();
+    listTables.mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise);
+    const wrapper = mount(TableSelector, { props: { modelValue: "new.t" } });
+    useSettings().database = "new";
+    await flushPromises();
+    old.resolve([table("old", "t")]);
+    await flushPromises();
+    expect(wrapper.get("select").attributes("disabled")).toBeDefined();
+    expect(wrapper.get("button").attributes("disabled")).toBeDefined();
+    current.resolve([table("new", "t")]);
+    await flushPromises();
+    expect(wrapper.get("select").attributes("disabled")).toBeUndefined();
+    expect(wrapper.text()).toContain("new.t");
+  });
+
+  it("clears an error when a manual retry succeeds", async () => {
+    listTables.mockRejectedValueOnce(new Error("temporarily unavailable"));
+    const wrapper = mount(TableSelector, { props: { modelValue: "evnt.local" } });
+    await flushPromises();
+    expect(wrapper.find(".err").exists()).toBe(true);
+    listTables.mockResolvedValueOnce([table("evnt", "local")]);
+    await wrapper.get("button").trigger("click");
+    await flushPromises();
+    expect(wrapper.find(".err").exists()).toBe(false);
+    expect(wrapper.text()).toContain("evnt.local");
+  });
+
+  it("emits the table selected by the user", async () => {
+    listTables.mockResolvedValue([table("evnt", "local"), table("evnt", "other")]);
+    const wrapper = mount(TableSelector, { props: { modelValue: "evnt.local" } });
+    await flushPromises();
+    await wrapper.get("select").setValue("evnt.other");
+    expect(wrapper.emitted("update:modelValue")).toEqual([["evnt.other"]]);
   });
 });

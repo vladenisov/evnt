@@ -146,6 +146,24 @@ jobs:
     - name: Build
       run: bun run build
 
+  documentation:
+    name: Docs (typecheck + build + links)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: website
+    steps:
+    - uses: actions/checkout@v6
+    - uses: oven-sh/setup-bun@v2
+      with:
+        bun-version-file: website/package.json
+    - name: Install dependencies
+      run: bun install --frozen-lockfile
+    - name: Typecheck
+      run: bun run typecheck
+    - name: Build (including link validation)
+      run: bun run build
+
   image:
     name: Build the image (no push)
     runs-on: ubuntu-latest
@@ -177,3 +195,39 @@ jobs:
       run: |
         docker run --rm evnt:ci evnt settings > /dev/null
         docker run --rm evnt:ci python -c "import evnt.main"
+
+    # Backend delivery is covered by the integration job. This exercises the
+    # shipped Uvicorn entrypoint and public assets with no backend connection.
+    - name: HTTP smoke test
+      run: |
+        docker run -d --name evnt-ci-http \
+          -e EVNT_COMMON__DEMO=true -e EVNT_PROMETHEUS__ENABLED=true \
+          evnt:ci uvicorn evnt.main:app --host 0.0.0.0 --port 8000 --lifespan off
+        trap 'docker rm -f evnt-ci-http' EXIT
+        docker exec -i evnt-ci-http python - <<'PY'
+        import time
+        import urllib.request
+
+        base = "http://127.0.0.1:8000"
+        for attempt in range(40):
+            try:
+                with urllib.request.urlopen(base + "/live", timeout=1) as response:
+                    assert response.status == 204
+                break
+            except OSError:
+                time.sleep(0.5)
+        else:
+            raise SystemExit("API did not start")
+        for path, content_type in [
+            ("/metrics", "text/plain"),
+            ("/static/sp/sp.js", "javascript"),
+            ("/demo/", "text/html"),
+            ("/demo/tables", "text/html"),
+        ]:
+            print(f"Checking {path}", flush=True)
+            request = urllib.request.Request(base + path, headers={"Accept": "text/html" if content_type == "text/html" else "*/*"})
+            with urllib.request.urlopen(request, timeout=5) as response:
+                assert response.status == 200, path
+                assert content_type in response.headers["content-type"], path
+                assert response.read(), path
+        PY

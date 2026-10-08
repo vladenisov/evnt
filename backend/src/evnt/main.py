@@ -7,7 +7,6 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware import Middleware
 from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi_structlog.middleware import CurrentScopeSetMiddleware, StructlogMiddleware
 from starlette.middleware.cors import CORSMiddleware
 
@@ -20,6 +19,7 @@ from evnt.middleware.access_log import PathSkippingAccessLogMiddleware
 from evnt.middleware.body_limit import BodySizeLimitMiddleware
 from evnt.middleware.security import SecurityHeadersMiddleware
 from evnt.observability.logging import init_logging, validation_exception_handler
+from evnt.static import DeferredStaticFiles
 
 
 def _base_middleware(config: Settings) -> list[Middleware]:
@@ -96,7 +96,7 @@ def _add_routes(app: FastAPI, config: Settings) -> None:
     # to /static/* simply 404 until then.
     app.mount(
         "/static",
-        StaticFiles(directory=config.common.static_dir, check_dir=False),
+        DeferredStaticFiles(directory=config.common.static_dir, check_dir=False),
         name="static",
     )
 
