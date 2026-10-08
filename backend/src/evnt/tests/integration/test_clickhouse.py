@@ -1,14 +1,17 @@
 """End-to-end: tracker requests through the real app into a real ClickHouse."""
 
 import asyncio
+import base64
 import time
 import uuid
 
+import orjson
 import pytest
 from clickhouse_connect.driver.client import Client
 from fastapi.testclient import TestClient
 
-from evnt.config import settings
+from evnt.config import EncryptionKeyConfig, settings
+from evnt.crypto import generate_keypair, seal_envelope
 from evnt.storage.clickhouse import ClickHouseConnector, TableManager
 from evnt.storage.clickhouse import client as clickhouse
 from evnt.tests.support import minimal_tp2_payload
@@ -51,6 +54,29 @@ def _payload(app_id: str) -> dict:
     payload = minimal_tp2_payload()
     payload["data"][0]["aid"] = app_id
     return payload
+
+
+@pytest.fixture
+def encryption_key(monkeypatch):
+    private_key, public_key = generate_keypair()
+    monkeypatch.setattr(settings.encryption, "enabled", True)
+    monkeypatch.setattr(
+        settings.encryption,
+        "keys",
+        [EncryptionKeyConfig(kid="integration", private_key=private_key)],
+    )
+    return base64.b64decode(public_key)
+
+
+def _send_encrypted(client, public_key, app_id, transport, *, compress=True):
+    envelope = seal_envelope(
+        public_key, "integration", orjson.dumps(_payload(app_id)), compress=compress
+    )
+    endpoint = settings.encryption.endpoint
+    if transport == "pixel":
+        return client.get(endpoint, params={"d": base64.urlsafe_b64encode(envelope).decode()})
+    body = base64.b64encode(envelope) if transport == "base64" else envelope
+    return client.post(endpoint, content=body)
 
 
 def test_db_init_is_idempotent(clickhouse_settings, ch, database):
@@ -117,23 +143,30 @@ def test_sync_insert_overrides_async_client_defaults(tables, ch, database, monke
         assert _rows_for(ch, database, app_id, timeout=0) == [(app_id, "web", "pv")]
 
 
+@pytest.mark.parametrize("transport", ["plaintext", "binary", "pixel"])
 def test_rabbitmq_worker_delivers_published_events(
     tables,
     rabbitmq_settings,
     monkeypatch,
     ch,
     database,
+    request,
+    transport,
 ):
     from evnt.ingest import RabbitMQBatchWorker
     from evnt.main import create_app
 
     app_id = f"it-queue-{uuid.uuid4().hex[:8]}"
+    public_key = request.getfixturevalue("encryption_key") if transport != "plaintext" else None
     monkeypatch.setattr(settings.ingest, "mode", "rabbitmq")
     with TestClient(create_app()) as client:
-        response = client.post(
-            settings.common.snowplow.endpoints.post_endpoint, json=_payload(app_id)
-        )
-        assert response.status_code == 204
+        if public_key is None:
+            response = client.post(
+                settings.common.snowplow.endpoints.post_endpoint, json=_payload(app_id)
+            )
+        else:
+            response = _send_encrypted(client, public_key, app_id, transport)
+        assert response.status_code == (200 if transport == "pixel" else 204)
         assert client.get("/").json()["ingest_mode"] == "rabbitmq"
 
     async def run_worker() -> None:
@@ -158,3 +191,29 @@ def test_rabbitmq_worker_delivers_published_events(
 
     asyncio.run(run_worker())
     assert _rows_for(ch, database, app_id) == [(app_id, "web", "pv")]
+
+
+@pytest.mark.parametrize("transport", ["binary", "base64", "pixel"])
+@pytest.mark.parametrize("compress", [False, True])
+def test_encrypted_event_lands_in_clickhouse(
+    tables, encryption_key, ch, database, transport, compress
+):
+    from evnt.main import create_app
+
+    app_id = f"it-sealed-{uuid.uuid4().hex[:8]}"
+    with TestClient(create_app()) as client:
+        response = _send_encrypted(client, encryption_key, app_id, transport, compress=compress)
+    assert response.status_code == (200 if transport == "pixel" else 204)
+    assert _rows_for(ch, database, app_id) == [(app_id, "web", "pv")]
+
+
+def test_invalid_batch_never_partially_lands_in_clickhouse(tables, ch, database):
+    from evnt.main import create_app
+
+    app_id = f"it-invalid-{uuid.uuid4().hex[:8]}"
+    payload = _payload(app_id)
+    payload["data"].append({"aid": app_id})
+    with TestClient(create_app()) as client:
+        response = client.post(settings.common.snowplow.endpoints.post_endpoint, json=payload)
+    assert response.status_code == 422
+    assert _rows_for(ch, database, app_id, timeout=0) == []

@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from evnt.api.deps import get_db_connector
 from evnt.config import EncryptionKeyConfig, settings
 from evnt.constants import CONTENT_TYPE_OCTET_STREAM
-from evnt.crypto import Keyring, generate_keypair
+from evnt.crypto import Keyring, generate_keypair, seal_envelope
 from evnt.tests.support import build_app, minimal_tp2_payload
 
 SCRIPT_ENDPOINT = "/e.js"
@@ -165,6 +165,48 @@ def _seal_with_node(tmp_path, script: str, payload: dict) -> dict:
 
 
 class TestServing:
+    def test_custom_endpoint_moves_the_sealer_and_ingest_together(
+        self, monkeypatch, keys, connector
+    ):
+        monkeypatch.setattr(settings.encryption, "endpoint", "/sealed")
+        app = build_app(monkeypatch)
+        app.state.keyring = Keyring.from_config(settings.encryption)
+        app.state.connector = connector
+        key = app.state.keyring.primary
+        envelope = seal_envelope(
+            key.public_key, key.kid, json.dumps(minimal_tp2_payload()).encode()
+        )
+
+        with TestClient(app) as client:
+            script = client.get("/sealed.js")
+            assert script.status_code == 200
+            assert '"endpoint":"/sealed"' in script.text
+            assert client.post("/sealed", content=envelope).status_code == 204
+            assert client.get("/e.js").status_code == 404
+            assert client.post("/e", content=envelope).status_code == 404
+        assert len(connector.inserted_batches) == 1
+
+    def test_key_rotation_updates_the_script_and_keeps_in_flight_payloads_valid(
+        self, client, connector, monkeypatch
+    ):
+        key = client.app.state.keyring.primary
+        envelope = seal_envelope(
+            key.public_key, key.kid, json.dumps(minimal_tp2_payload()).encode()
+        )
+        with client:
+            before = client.get(SCRIPT_ENDPOINT).text
+            monkeypatch.setattr(
+                settings.encryption, "keys", list(reversed(settings.encryption.keys))
+            )
+            client.app.state.keyring = Keyring.from_config(settings.encryption)
+            after = client.get(SCRIPT_ENDPOINT).text
+            response = client.post(ENDPOINT, content=envelope)
+        assert before != after
+        assert '"kid":"primary"' in before
+        assert '"kid":"retired"' in after
+        assert response.status_code == 204
+        assert len(connector.inserted_batches) == 1
+
     def test_script_carries_the_primary_public_key(self, client):
         with client:
             response = client.get(SCRIPT_ENDPOINT)
