@@ -132,11 +132,10 @@ make dev-docs      # local preview, http://localhost:3000/evnt/
 make check-docs    # TypeScript config check + production build
 ```
 
-The build fails on broken links. CI runs it as a required gate; the docs
-workflow publishes GitHub Pages artifacts on changes to `main` or on manual
-dispatch from `main`. Repository Settings → Pages → Source must be **GitHub
-Actions** before the first publication. The configured project URL is
-<https://vladenisov.github.io/evnt/>.
+The build fails on broken links. CI runs it as a required gate. The docs
+workflow publishes GitHub Pages on changes to `main` or on manual dispatch
+from `main`. See [Publishing documentation](run/documentation.md) for the
+one-time repository setup, the first deployment, and troubleshooting.
 
 Keep configuration guides aligned with `.env.example`, compose, and code
 defaults. This guide is native Markdown in `website/docs/contributing.md`.

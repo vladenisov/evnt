@@ -20,9 +20,6 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pages: read
     defaults:
       run:
         working-directory: website
@@ -34,7 +31,6 @@ jobs:
     - run: bun install --frozen-lockfile
     - run: bun run typecheck
     - run: bun run build
-    - uses: actions/configure-pages@v5
     - uses: actions/upload-pages-artifact@v4
       with:
         path: website/build
@@ -50,5 +46,9 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+    # Enable the site once in Settings -> Pages -> Source = GitHub Actions.
+    # configure-pages cannot enable it using the default GITHUB_TOKEN.
+    - name: Check GitHub Pages configuration
+      uses: actions/configure-pages@v5
     - id: deployment
       uses: actions/deploy-pages@v4

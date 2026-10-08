@@ -45,6 +45,7 @@ make dev-docs
 - [Docker deployment](website/docs/run/docker.md) and [RabbitMQ worker](website/docs/run/queue.md)
 - [Architecture](website/docs/architecture.md)
 - [Development and testing](website/docs/contributing.md)
+- [Publish documentation on GitHub Pages](website/docs/run/documentation.md)
 - [Releases](https://github.com/vladenisov/evnt/releases)
 
 Settings use the `EVNT_` prefix and `__` nesting. See [`.env.example`](.env.example)
