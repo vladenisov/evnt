@@ -11,11 +11,11 @@ Use it to:
 - proxy allowlisted third-party analytics scripts first-party;
 - serve the demo SPA when demo mode is enabled.
 
-This file is the fast operational guide for agents. Build, test and lint commands live in **[CONTRIBUTING.md](CONTRIBUTING.md)**, the single source of truth; user-facing configuration lives in **[README.md](README.md)**.
+This file is the fast operational guide for agents. Build, test and lint commands live in **[website/docs/contributing.md](website/docs/contributing.md)**, the single source of truth; public configuration and operational guides live in **[website/docs](website/docs)**, with a quickstart in **[README.md](README.md)**.
 
 ## Toolchain Rules
 
-- Backend: `uv` only (`backend/uv.lock`). Frontend: `bun` only (`frontend/bun.lock`). Never `pip`, `poetry`, `npm` or `yarn`: the lockfiles drift from CI.
+- Backend: `uv` only (`backend/uv.lock`). Frontend and docs: `bun` only (`frontend/bun.lock`, `website/bun.lock`). Never `pip`, `poetry`, `npm` or `yarn`: the lockfiles drift from CI.
 - Run backend commands from `backend/` (`uv run pytest`, `uv run evnt ...`), or use the root `Makefile` (`make check` runs the local gates; CI also requires integration tests and coverage).
 - The CLI is the `evnt` console script (`uv run evnt settings`, `evnt db init`, `evnt queue worker`, `evnt queue healthcheck`, `evnt scripts download`, `evnt keys generate`). There is no `cli.py` to run by path.
 
@@ -38,6 +38,7 @@ backend/
     middleware/, observability/  raw-ASGI middleware; logging, tracing, APM
     tests/                       mirrors the package; tests/integration needs real backends
 frontend/                        Vue 3 demo SPA (Vite, Bun), served at /demo/
+website/                         Docusaurus docs (Bun); make check-docs validates types and links
 deploy/clickhouse/               ClickHouse config mounted by compose.yml
 Dockerfile, compose.yml, Makefile
 ```
@@ -54,8 +55,8 @@ Dockerfile, compose.yml, Makefile
 
 ## Guardrails
 
-- External contracts are stable: the `EVNT_` env prefix with `__` nesting, the endpoint paths above, and the ClickHouse column layout. Changing any of them is a breaking change and goes in CHANGELOG.md.
-- Keep README tables, `.env.example`, `compose.yml` and code defaults aligned when touching configuration.
-- Unit tests fake ClickHouse and RabbitMQ. If a change depends on real backend behaviour (DDL, insert settings, queue semantics), cover it in `tests/integration` and run it (CONTRIBUTING.md, "Integration tests"). Mocks in this repo have hidden real bugs before.
+- External contracts are stable: the `EVNT_` env prefix with `__` nesting, the endpoint paths above, and the ClickHouse column layout. Changing any of them is a breaking change: document migration steps in `website/docs/run/upgrading.md` and the behavior in GitHub Release notes.
+- Keep `website/docs` configuration tables, `.env.example`, `compose.yml` and code defaults aligned when touching configuration.
+- Unit tests fake ClickHouse and RabbitMQ. If a change depends on real backend behaviour (DDL, insert settings, queue semantics), cover it in `tests/integration` and run it (`website/docs/contributing.md`, "Integration tests"). Mocks in this repo have hidden real bugs before.
 - When touching request parsing, check both `/tracker` and `/i`: the POST body and the GET query string bind the same model through different FastAPI paths.
 - Keep the proxy routes out of scope unless the task requires them.

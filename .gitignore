@@ -18,6 +18,7 @@ dist/
 node_modules/
 .pnpm-store/
 .bun/
+.docusaurus/
 *.tsbuildinfo
 
 # Downloaded Snowplow tracker scripts (`evnt scripts download`), regenerated on

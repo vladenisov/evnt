@@ -1,13 +1,14 @@
 # evnt: convenience commands. Run `make` (or `make help`) for the list.
 #
-# The backend uses uv (backend/, uv.lock); the frontend uses Bun (frontend/,
-# bun.lock). Targets cd into the right subproject, so everything runs
-# from the repo root. They wrap the exact commands CI runs and CONTRIBUTING.md
+# The backend uses uv (backend/, uv.lock); the frontend and docs use Bun
+# (frontend/ and website/, bun.lock). Targets cd into the right subproject, so everything runs
+# from the repo root. They wrap the exact commands CI runs and website/docs/contributing.md
 # documents; nothing here changes how the tools are invoked.
 
 ROOT := $(patsubst %/,%,$(dir $(realpath $(firstword $(MAKEFILE_LIST)))))
 BACKEND := $(ROOT)/backend
 FRONTEND := $(ROOT)/frontend
+WEBSITE := $(ROOT)/website
 
 .DEFAULT_GOAL := help
 
@@ -19,8 +20,8 @@ help: ## Show this help
 		$(MAKEFILE_LIST)
 
 ##@ Setup
-.PHONY: install install-be install-fe install-hooks
-install: install-be install-fe install-hooks ## Install backend + frontend deps, the Iglu schemas and git hooks
+.PHONY: install install-be install-fe install-docs install-hooks
+install: install-be install-fe install-docs install-hooks ## Install backend, frontend, docs, Iglu schemas and git hooks
 
 install-be: ## Install backend deps with every extra (CI parity) and the iglu-central submodule
 	git -C $(ROOT) submodule update --init --depth 1
@@ -28,6 +29,9 @@ install-be: ## Install backend deps with every extra (CI parity) and the iglu-ce
 
 install-fe: ## Install frontend deps (bun install --frozen-lockfile)
 	cd $(FRONTEND) && bun install --frozen-lockfile
+
+install-docs: ## Install documentation deps (bun install --frozen-lockfile)
+	cd $(WEBSITE) && bun install --frozen-lockfile
 
 install-hooks: ## Install the pre-commit hooks
 	cd $(BACKEND) && uv run pre-commit install --config $(ROOT)/.pre-commit-config.yaml
@@ -49,7 +53,7 @@ db-init: ## Create the ClickHouse tables in the compose stack
 
 ##@ Quality gates
 .PHONY: check lint lint-be lint-fe format typecheck typecheck-be typecheck-fe test test-be test-fe build-fe
-check: lint typecheck test build-fe ## Run local gates (lint + types + tests + production build)
+check: lint typecheck test build-fe check-docs ## Run local gates including frontend and documentation builds
 
 lint: lint-be lint-fe ## Lint backend + frontend
 
@@ -80,6 +84,17 @@ test-fe: ## Run frontend tests. Extra args: make test-fe ARGS=clickhouse
 
 build-fe: ## Production build of the demo SPA
 	cd $(FRONTEND) && bun run build
+
+##@ Documentation
+.PHONY: dev-docs build-docs check-docs
+dev-docs: ## Start the Docusaurus documentation server
+	cd $(WEBSITE) && bun run start
+
+build-docs: ## Build static documentation with strict link validation
+	cd $(WEBSITE) && bun run build
+
+check-docs: ## Type-check and build the documentation
+	cd $(WEBSITE) && bun run typecheck && bun run build
 
 ##@ Docker
 .PHONY: image

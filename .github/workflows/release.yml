@@ -63,3 +63,21 @@ jobs:
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+
+  notes:
+    name: Publish GitHub Release notes
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - name: Create release from merged pull requests
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+          exit 0
+        fi
+        gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+          --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
