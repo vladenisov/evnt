@@ -17,7 +17,7 @@ dependencies = [
     "httpx>=0.28.1",
     "jsonschema>=4.25.1",
     "orjson>=3.10.16",
-    "prometheus-fastapi-instrumentator>=7.1.0",
+    "prometheus-fastapi-instrumentator>=8.1.0",
     "pydantic>=2.11",
     "pydantic-settings>=2.9.1",
     "structlog>=25.3.0",
@@ -110,6 +110,6 @@ omit = ["*/evnt/tests/*"]
 [tool.coverage.report]
 # A ratchet: raise it when coverage rises, never lower it to get a red run
 # through. pytest-cov reads it, so CI passes no --cov-fail-under of its own.
-# Measured with all extras, unit tests only: 86.8% on 2026-10-08.
-fail_under = 86
+# Measured with all extras, unit tests only: 87.5% on 2026-10-08.
+fail_under = 87
 skip_empty = true
