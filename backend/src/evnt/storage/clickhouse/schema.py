@@ -4,8 +4,6 @@ Snowplow schema field definitions for ClickHouse.
 
 from typing import NamedTuple
 
-from clickhouse_connect.cc_sqlalchemy.datatypes.base import ChSqlaType
-from clickhouse_connect.cc_sqlalchemy.datatypes.sqltypes import LowCardinality
 from clickhouse_connect.datatypes.base import ClickHouseType, TypeDef
 from clickhouse_connect.datatypes.container import Tuple
 from clickhouse_connect.datatypes.dynamic import JSON as JSONType  # noqa: N811
@@ -20,7 +18,7 @@ from clickhouse_connect.driver.binding import quote_identifier
 class ColumnDef(NamedTuple):
     payload_name: str | None
     name: str
-    type: ClickHouseType | ChSqlaType | LowCardinality
+    type: ClickHouseType
     default_type: str | None = None
     default_expression: str | None = None
     comment: str | None = None
@@ -80,7 +78,7 @@ class TupleColumnDef(NamedTuple):
 
 
 STRING = String(type_def=TypeDef())
-STRING_LC = LowCardinality(STRING)
+STRING_LC = String(type_def=TypeDef(wrappers=("LowCardinality",)))
 UINT64 = UInt64(type_def=TypeDef())
 FLOAT32 = Float32(type_def=TypeDef())
 BOOL = Bool(type_def=TypeDef())

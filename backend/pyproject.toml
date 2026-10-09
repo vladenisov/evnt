@@ -6,35 +6,37 @@ license = "BSD-3-Clause"
 authors = [{ name = "Vladislav Denisov" }]
 requires-python = ">=3.14"
 dependencies = [
-    "aio-pika>=9.5.7",
+    "aio-pika>=10.1.0",
     "asgi-correlation-id>=4.3.4",
-    "brotli-asgi>=1.4.0",
-    "clickhouse-connect>=0.8.17",
-    "crawlerdetect>=0.3.0",
-    "fastapi>=0.138.0",
+    "brotli-asgi>=1.6.0",
+    "clickhouse-connect[async,tzdata]>=1.10.0",
+    "crawlerdetect>=0.4.2",
+    "fastapi>=0.143.0",
     "fastapi-structlog>=0.7.1",
-    "fire>=0.7.0",
+    "fire>=0.7.1",
     "httpx>=0.28.1",
-    "jsonschema>=4.25.1",
-    "orjson>=3.10.16",
+    "jsonschema>=4.26.0",
+    "orjson>=3.13.0",
     "prometheus-fastapi-instrumentator>=8.1.0",
-    "pydantic>=2.11",
-    "pydantic-settings>=2.9.1",
-    "structlog>=25.3.0",
-    "ua-parser[regex]>=1.0.1",
-    "uvicorn>=0.34.2",
+    "pydantic>=2.14.0",
+    "pydantic-settings>=2.15.0",
+    # fastapi-structlog imports sqlalchemy.ext.asyncio, which requires greenlet.
+    "sqlalchemy[asyncio]>=2.1.4",
+    "structlog>=25.5.0",
+    "ua-parser[regex]>=1.0.2",
+    "uvicorn>=0.54.0",
 ]
 
 [project.optional-dependencies]
 # `uv sync --extra apm`. Required when EVNT_ELASTIC_APM__ENABLED=true; without
 # it, evnt.observability.tracing falls back to no-op span decorators and
 # enabling APM fails at startup with a clear error.
-apm = ["elastic-apm>=6.23.0"]
+apm = ["elastic-apm>=6.26.2"]
 # `uv sync --extra sentry`. Required when EVNT_SENTRY__ENABLED=true.
-sentry = ["sentry-sdk[fastapi]>=2.35.1"]
+sentry = ["sentry-sdk[fastapi]>=2.71.0"]
 # `uv sync --extra crypto`. Required when EVNT_ENCRYPTION__ENABLED=true;
 # without it, startup fails with a clear error and `/e` is never mounted.
-crypto = ["cryptography>=45.0.0"]
+crypto = ["cryptography>=50.0.2"]
 
 [project.scripts]
 evnt = "evnt.cli:main"
@@ -44,13 +46,13 @@ evnt = "evnt.cli:main"
 dev = [
     # Mirrors the `crypto` extra so the encrypted-ingest tests run on a plain
     # `uv sync` instead of being skipped.
-    "cryptography>=45.0.0",
-    "mypy>=1.18",
-    "pre-commit>=4.2.0",
-    "pytest>=8.3.5",
-    "pytest-cov>=7.0.0",
+    "cryptography>=50.0.2",
+    "mypy>=2.4.0",
+    "pre-commit>=4.6.2",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
     "pytest-xdist>=3.8.0",
-    "ruff>=0.15.9",
+    "ruff>=0.16.10",
 ]
 
 [build-system]

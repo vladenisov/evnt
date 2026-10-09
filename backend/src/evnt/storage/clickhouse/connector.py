@@ -14,7 +14,7 @@ from evnt.observability.tracing import async_capture_span
 from evnt.storage.clickhouse.schema import ColumnDef, TupleColumnDef, get_fields_for_table_group
 
 if TYPE_CHECKING:
-    from clickhouse_connect.driver.asyncclient import AsyncClient
+    from clickhouse_connect.driver import AsyncClient
     from clickhouse_connect.driver.query import QueryResult
 
 logger = structlog.get_logger(__name__)
