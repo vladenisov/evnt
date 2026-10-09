@@ -139,7 +139,7 @@ def demo_client(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("path", ["/demo/", "/demo/tables", "/demo/settings"])
 def test_demo_history_routes_serve_the_index(demo_client, path):
-    response = demo_client.get(path)
+    response = demo_client.get(path, headers={"Accept": "text/html"})
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "evnt demo" in response.text
@@ -152,7 +152,7 @@ def test_demo_assets_and_missing_assets_do_not_use_the_html_fallback(demo_client
     assert demo_client.get("/demo/assets/missing.js").status_code == 404
 
 
-@pytest.mark.parametrize("accept", ["application/json", ""])
+@pytest.mark.parametrize("accept", ["application/json", "*/*", ""])
 def test_demo_history_fallback_requires_an_html_navigation(demo_client, accept):
     assert demo_client.get("/demo/tables", headers={"Accept": accept}).status_code == 404
 

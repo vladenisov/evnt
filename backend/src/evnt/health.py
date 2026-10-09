@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Callable
 
 import structlog
-from clickhouse_connect.driver.asyncclient import AsyncClient
+from clickhouse_connect.driver import AsyncClient
 
 from evnt.protocols import HealthChecker
 from evnt.storage.clickhouse.client import is_ready

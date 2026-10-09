@@ -80,7 +80,8 @@ async def test_check_queue_worker_dependencies_returns_healthy_status(
     }
     assert client_kwargs["query_limit"] == 0
     pool_size = cli_module.settings.performance.db_pool_size
-    assert client_kwargs["pool_mgr"].connection_pool_kw["maxsize"] == pool_size
+    assert client_kwargs["connector_limit"] == pool_size
+    assert client_kwargs["connector_limit_per_host"] == pool_size
     assert channel.declare_calls == [
         {
             "name": "evnt.ingest",

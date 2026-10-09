@@ -4,9 +4,11 @@ import asyncio
 import base64
 import time
 import uuid
+from datetime import UTC, datetime
 
 import orjson
 import pytest
+from clickhouse_connect.driver import AsyncClient
 from clickhouse_connect.driver.client import Client
 from fastapi.testclient import TestClient
 
@@ -85,6 +87,50 @@ def test_db_init_is_idempotent(clickhouse_settings, ch, database):
 
     tables = {row[0] for row in ch.query(f"SHOW TABLES FROM {database}").result_rows}
     assert "local" in tables
+
+
+@pytest.mark.anyio
+async def test_native_async_client_handles_concurrent_queries(clickhouse_settings):
+    client = await clickhouse.create_ready_client(settings.clickhouse, pool_size=2)
+    try:
+        assert isinstance(client, AsyncClient)
+        results = await asyncio.wait_for(
+            asyncio.gather(*(client.query(clickhouse.READINESS_QUERY) for _ in range(16))),
+            timeout=10,
+        )
+        assert all(result.first_row == (1,) for result in results)
+    finally:
+        await client.close()
+
+
+@pytest.mark.parametrize("transport", ["post", "pixel"])
+def test_tracker_timestamps_keep_utc_millisecond_precision(tables, ch, database, transport):
+    from evnt.main import create_app
+
+    app_id = f"it-time-{uuid.uuid4().hex[:8]}"
+    milliseconds = 1791522000123
+    payload = _payload(app_id)
+    payload["data"][0].update(dtm=str(milliseconds), stm=str(milliseconds + 456))
+    with TestClient(create_app()) as client:
+        if transport == "post":
+            response = client.post(settings.common.snowplow.endpoints.post_endpoint, json=payload)
+        else:
+            response = client.get(
+                settings.common.snowplow.endpoints.get_endpoint, params=payload["data"][0]
+            )
+        assert response.status_code == (204 if transport == "post" else 200)
+
+    assert _rows_for(ch, database, app_id)
+    row = ch.query(
+        f"SELECT time, toUnixTimestamp64Milli(time), toUnixTimestamp64Milli(time_extra.sent) "
+        f"FROM {database}.local WHERE app_id = %(app_id)s",
+        parameters={"app_id": app_id},
+    ).first_row
+    assert row == (
+        datetime.fromtimestamp(milliseconds / 1000, tz=UTC).replace(tzinfo=None),
+        milliseconds,
+        milliseconds + 456,
+    )
 
 
 def test_post_batch_lands_in_clickhouse(tables, ch, database):

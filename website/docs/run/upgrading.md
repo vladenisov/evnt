@@ -26,3 +26,14 @@ remain the same; deployment commands and internal paths change.
 See [Docker deployment](docker.md), [configuration](../configure/settings.md),
 and [GitHub Releases](https://github.com/vladenisov/evnt/releases) for operation
 and version-specific changes. There is no separate manually maintained changelog.
+
+## Native async ClickHouse client
+
+The backend now uses `clickhouse-connect[async,tzdata]` 1.x. Rebuild the image or
+run `uv sync --locked --all-extras` from `backend/` to install the updated lockfile.
+The async transport uses aiohttp; `EVNT_PERFORMANCE__DB_POOL_SIZE` limits concurrent
+HTTP connections per process. It no longer sizes a urllib3 pool used by an executor.
+
+The packaged timezone data supports minimal images without system timezone files.
+Collector URLs, environment variable names, and ClickHouse column definitions
+remain unchanged. UTC timestamps retain millisecond precision.

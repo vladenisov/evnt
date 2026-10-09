@@ -6,8 +6,7 @@ from typing import Any
 
 import structlog
 from clickhouse_connect import get_async_client
-from clickhouse_connect.driver.asyncclient import AsyncClient
-from clickhouse_connect.driver.httputil import get_pool_manager
+from clickhouse_connect.driver import AsyncClient
 
 from evnt.config import ClickHouseConfig, DirectInsertConfig
 
@@ -34,15 +33,12 @@ def insert_settings(config: DirectInsertConfig, *, require_wait: bool = False) -
 
 
 async def create_client(config: ClickHouseConfig, pool_size: int) -> AsyncClient:
-    """Open a pooled async client without checking the server.
-
-    clickhouse-connect's async client wraps the sync HTTP client in a thread
-    pool, so the connection pool is sized through urllib3's ``maxsize``.
-    """
+    """Initialize the native async client with the configured connection limits."""
     client: AsyncClient = await get_async_client(
         **config.connection.as_client_kwargs(),
         query_limit=0,
-        pool_mgr=get_pool_manager(maxsize=pool_size),
+        connector_limit=pool_size,
+        connector_limit_per_host=pool_size,
     )
     return client
 
@@ -50,7 +46,8 @@ async def create_client(config: ClickHouseConfig, pool_size: int) -> AsyncClient
 async def is_ready(client: AsyncClient) -> bool:
     """Run the readiness query; any exception propagates to the caller."""
     result = await client.query(READINESS_QUERY)
-    return bool(result.first_row[0] == 1)
+    row = result.first_row
+    return bool(row and row[0] == 1)
 
 
 async def create_ready_client(config: ClickHouseConfig, pool_size: int) -> AsyncClient:

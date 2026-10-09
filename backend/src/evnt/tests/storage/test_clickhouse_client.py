@@ -43,7 +43,8 @@ def test_insert_settings(config, require_wait, expected):
 
 
 @pytest.mark.anyio
-async def test_create_client_sizes_the_connection_pool(monkeypatch):
+@pytest.mark.parametrize("pool_size", [7, 32])
+async def test_create_client_sizes_the_connection_pool(monkeypatch, pool_size):
     seen = {}
 
     async def fake_get_async_client(**kwargs):
@@ -53,9 +54,11 @@ async def test_create_client_sizes_the_connection_pool(monkeypatch):
     monkeypatch.setattr(clickhouse, "get_async_client", fake_get_async_client)
     config = ClickHouseConfig()
 
-    await clickhouse.create_client(config, pool_size=7)
+    await clickhouse.create_client(config, pool_size=pool_size)
 
-    assert seen["pool_mgr"].connection_pool_kw["maxsize"] == 7
+    assert seen["connector_limit"] == pool_size
+    assert seen["connector_limit_per_host"] == pool_size
+    assert "pool_mgr" not in seen
     assert seen["query_limit"] == 0
     assert seen["host"] == config.connection.host
     # The secret is unwrapped for the driver, never passed as a SecretStr.
