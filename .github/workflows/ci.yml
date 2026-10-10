@@ -60,7 +60,7 @@ jobs:
         working-directory: backend
     services:
       clickhouse:
-        image: clickhouse/clickhouse-server:26.3
+        image: clickhouse/clickhouse-server:26.9
         env:
           CLICKHOUSE_USER: evnt
           CLICKHOUSE_PASSWORD: evnt

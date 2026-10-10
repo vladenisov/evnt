@@ -70,7 +70,7 @@ services:
 
   clickhouse:
     container_name: clickhouse
-    image: clickhouse/clickhouse-server:26.3.4.11-alpine
+    image: clickhouse/clickhouse-server:26.9.15.5-alpine
     environment:
     - "CLICKHOUSE_PASSWORD=password"
     ports:
