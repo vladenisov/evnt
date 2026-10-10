@@ -35,7 +35,7 @@ FROM demo-${BUILD_DEMO} AS demo
 
 # ---- backend virtualenv, tracker download, Iglu schemas ----
 FROM ${PYTHON_IMAGE} AS backend
-COPY --from=ghcr.io/astral-sh/uv:0.11.8 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.0 /uv /usr/local/bin/uv
 ARG EXTRAS=""
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
