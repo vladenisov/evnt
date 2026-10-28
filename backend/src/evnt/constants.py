@@ -101,9 +101,10 @@ DEFAULT_RABBITMQ_STARTUP_TIMEOUT_SECONDS: Final[int] = 60
 DEFAULT_RABBITMQ_STARTUP_RETRY_INTERVAL_MS: Final[int] = 1000
 
 # Worker liveness contract
-# The worker writes the wall-clock time of its last successful flush to this
-# file; the healthcheck considers the worker dead if the file is missing or the
-# recorded timestamp is older than the staleness threshold. This threshold must
+# The worker heartbeat writes the wall-clock time to this file while the batch
+# loop is making progress; the healthcheck considers the worker dead if the
+# file is missing or the recorded timestamp is older than the staleness
+# threshold. This threshold must
 # stay strictly greater than the worker's MAX_BACKOFF_SECONDS so a sustained
 # backend outage (which makes the worker sleep up to one full backoff between
 # liveness writes) cannot be misread as a dead worker.
@@ -114,6 +115,10 @@ WORKER_LIVENESS_STALE_SECONDS: Final[int] = 120
 # an idle worker (even with a large EVNT_INGEST__RABBITMQ__BATCH_TIMEOUT_MS) is
 # never mistaken for dead between writes.
 WORKER_HEARTBEAT_SECONDS: Final[int] = WORKER_LIVENESS_STALE_SECONDS // 3
+# Extra time a single batch-loop step (decode/ack, flush, nack) may take on top
+# of the insert timeout before the heartbeat treats the loop as stalled and
+# stops refreshing liveness, so the healthcheck can restart a hung worker.
+WORKER_STALL_GRACE_SECONDS: Final[int] = 60
 
 # Async insert settings for ClickHouse
 CLICKHOUSE_ASYNC_SETTINGS: Final[dict[str, int]] = {

@@ -8,7 +8,7 @@ The worker writes a liveness file that a dedicated healthcheck reads:
 evnt queue healthcheck
 ```
 
-This is wired as the worker container `HEALTHCHECK` in [`compose.yml`](https://github.com/vladenisov/evnt/blob/main/compose.yml); it reports unhealthy if the worker stops refreshing liveness. The staleness threshold stays above the worker's max backoff so a sustained backend outage is not misread as a dead worker.
+This is wired as the worker container `HEALTHCHECK` in [`compose.yml`](https://github.com/vladenisov/evnt/blob/main/compose.yml); it reports unhealthy if the worker stops refreshing liveness. The staleness threshold stays above the worker's max backoff so a sustained backend outage is not misread as a dead worker. Waiting for messages and backing off count as healthy; a single batch step (decode and ack, flush, nack) that runs longer than `EVNT_INGEST__RABBITMQ__INSERT_TIMEOUT_SECONDS` plus 60 seconds counts as a stall, so the worker stops refreshing liveness, logs `RabbitMQ batch worker loop stalled`, and the healthcheck restarts it.
 
 The `rabbitmq` compose profile adds the broker and worker. It does not change
 the API ingest mode: set `EVNT_INGEST__MODE=rabbitmq` explicitly.

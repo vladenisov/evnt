@@ -24,7 +24,11 @@ from clickhouse_connect.driver.exceptions import DataError
 from pydantic import BaseModel, Field
 
 from evnt.config import RabbitMQConfig
-from evnt.constants import WORKER_HEARTBEAT_SECONDS, WORKER_LIVENESS_PATH
+from evnt.constants import (
+    WORKER_HEARTBEAT_SECONDS,
+    WORKER_LIVENESS_PATH,
+    WORKER_STALL_GRACE_SECONDS,
+)
 from evnt.protocols import RowSink
 
 logger = structlog.get_logger(__name__)
@@ -290,6 +294,9 @@ class RabbitMQBatchWorker:
         self.flush_interval = config.batch_timeout_ms / _MS_PER_SECOND
         self.retry_delay = config.retry_delay_ms / _MS_PER_SECOND
         self.insert_timeout = config.insert_timeout_seconds
+        # A step longer than this means the loop is stuck on an await that
+        # never returns (ack/nack/publish have no timeout of their own).
+        self.stall_threshold = self.insert_timeout + WORKER_STALL_GRACE_SECONDS
         self.pending_batches: dict[str, list[PendingMessage]] = defaultdict(list)
         self.pending_row_counts: dict[str, int] = defaultdict(int)
         # Per-table-group consecutive insert-failure counts, used to drive a
@@ -297,6 +304,9 @@ class RabbitMQBatchWorker:
         # (never while holding/awaiting an in-flight message).
         self.failure_counts: dict[str, int] = defaultdict(int)
         self._backoff_applied_counts: dict[str, int] = {}
+        # Monotonic start of the batch-loop step in progress, ``None`` while the
+        # loop is idle (waiting for messages or backing off).
+        self._busy_since: float | None = None
 
     @classmethod
     async def create(
@@ -337,6 +347,7 @@ class RabbitMQBatchWorker:
         try:
             async with iterator:
                 while True:
+                    self._busy_since = None
                     # Apply any pending capped exponential backoff BEFORE
                     # fetching the next message so failing inserts do not stall
                     # the consumer mid-flush (which would hold prefetch and
@@ -351,6 +362,7 @@ class RabbitMQBatchWorker:
                             timeout=self.flush_interval,
                         )
                     except TimeoutError:
+                        self._busy_since = time.monotonic()
                         await self.flush_all()
                         continue
                     except StopAsyncIteration as exc:
@@ -363,6 +375,7 @@ class RabbitMQBatchWorker:
                         ) from exc
 
                     next_message_task = None
+                    self._busy_since = time.monotonic()
                     await self.add_message(message)
         finally:
             heartbeat_task.cancel()
@@ -439,17 +452,34 @@ class RabbitMQBatchWorker:
                 path=str(WORKER_LIVENESS_PATH),
             )
 
+    def _busy_seconds(self) -> float:
+        """Return how long the current batch-loop step has been running."""
+
+        if self._busy_since is None:
+            return 0.0
+        return time.monotonic() - self._busy_since
+
     async def _heartbeat_loop(self) -> None:
-        """Refresh the liveness file on a fixed cadence.
+        """Refresh the liveness file on a fixed cadence while the loop progresses.
 
         Runs as a background task for the worker's lifetime so liveness is
         decoupled from message flow, the batch-flush timeout, and backoff. This
         keeps an idle worker (or one configured with a large batch timeout) from
-        being mistaken for dead by ``queue healthcheck``.
+        being mistaken for dead by ``queue healthcheck``. Liveness is withheld
+        while a single step runs past ``stall_threshold`` so a loop stuck on a
+        hung await goes stale and gets restarted.
         """
 
         while True:
-            self._mark_alive()
+            busy_seconds = self._busy_seconds()
+            if busy_seconds <= self.stall_threshold:
+                self._mark_alive()
+            else:
+                logger.error(
+                    "RabbitMQ batch worker loop stalled, withholding liveness",
+                    busy_seconds=round(busy_seconds, 1),
+                    stall_threshold_seconds=self.stall_threshold,
+                )
             await asyncio.sleep(WORKER_HEARTBEAT_SECONDS)
 
     async def add_message(self, message: AbstractIncomingMessage) -> None:
@@ -485,11 +515,16 @@ class RabbitMQBatchWorker:
         rows: list[dict[str, Any]],
         table_group: str,
     ) -> None:
-        insert_batch = getattr(self.sink, "insert_batch", None)
-        if callable(insert_batch):
-            await insert_batch(rows, table_group=table_group)
-            return
-        await self.sink.insert_rows(rows, table_group=table_group)
+        try:
+            insert_batch = getattr(self.sink, "insert_batch", None)
+            if callable(insert_batch):
+                await insert_batch(rows, table_group=table_group)
+                return
+            await self.sink.insert_rows(rows, table_group=table_group)
+        finally:
+            # Each insert attempt is bounded by ``insert_timeout``; restart the
+            # step clock so a long data-error split is not read as a stall.
+            self._busy_since = time.monotonic()
 
     async def _publish_failed_message(
         self,

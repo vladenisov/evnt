@@ -94,9 +94,10 @@ async def _check_queue_worker_dependencies() -> dict[str, bool]:
 def _worker_is_alive(log: Any) -> bool:
     """Whether the worker liveness file is present and fresh.
 
-    The worker rewrites ``WORKER_LIVENESS_PATH`` with the wall-clock time after
-    each flush and on a heartbeat. A missing or stale file means the worker
-    loop has stopped making progress.
+    The worker heartbeat rewrites ``WORKER_LIVENESS_PATH`` with the wall-clock
+    time while the batch loop is idle or making progress, and stops once a
+    single step stalls. A missing or stale file means the worker loop has
+    stopped making progress.
     """
     path = str(WORKER_LIVENESS_PATH)
     try:
