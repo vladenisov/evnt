@@ -55,6 +55,44 @@ def _seal(public_key: bytes, payload: dict | None = None, **kwargs) -> bytes:
     return seal_envelope(public_key, "k1", body, **kwargs)
 
 
+@pytest.mark.parametrize("method", ["POST", "GET"])
+def test_encrypted_requests_preserve_client_network_metadata(
+    client,
+    connector,
+    public_key,
+    monkeypatch,
+    method,
+):
+    monkeypatch.setattr(
+        settings.common,
+        "snowplow",
+        settings.common.snowplow.model_copy(
+            update={
+                "user_ip_header": "CF-Connecting-IP",
+                "user_country_header": "CF-IPCountry",
+            }
+        ),
+    )
+    headers = {"CF-Connecting-IP": "2001:db8::7", "CF-IPCountry": "CN"}
+    envelope = _seal(public_key)
+    with client:
+        response = (
+            client.post(ENDPOINT, content=envelope, headers=headers)
+            if method == "POST"
+            else client.get(
+                ENDPOINT,
+                params={
+                    "d": base64.urlsafe_b64encode(envelope).decode(),
+                },
+                headers=headers,
+            )
+        )
+    assert response.status_code in (HTTP_NO_CONTENT, HTTP_OK)
+    row = connector.inserted_batches[0][0]
+    assert str(row["user_ip"]) == "0.0.0.0"
+    assert row["extra"]["collector"] == {"client_ip": "2001:db8::7", "ip_country": "CN"}
+
+
 class TestPost:
     def test_sealed_payload_produces_the_same_rows_as_plaintext(
         self,

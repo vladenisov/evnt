@@ -27,6 +27,42 @@ See [Docker deployment](docker.md), [configuration](../configure/settings.md),
 and [GitHub Releases](https://github.com/vladenisov/evnt/releases) for operation
 and version-specific changes. There is no separate manually maintained changelog.
 
+## Original client IP and proxy country
+
+Collector rows now preserve the original parsed IP in
+`extra.collector.client_ip`, including native IPv6. `user_ip` stays IPv4 with its
+existing conversion and unknown-address behavior. No new column or `ALTER TABLE`
+is required; direct ingestion and RabbitMQ use the existing JSON column.
+
+Country-header ingestion is opt-in. Behind a trusted Cloudflare origin, set:
+
+```bash
+EVNT_SECURITY__TRUST_PROXY_HEADERS=true
+EVNT_COMMON__SNOWPLOW__USER_IP_HEADER=CF-Connecting-IP
+EVNT_COMMON__SNOWPLOW__USER_COUNTRY_HEADER=CF-IPCountry
+```
+
+Use the original Cloudflare header, not `CF-Pseudo-IPv4`. Pseudo IPv4 **Add Header**
+preserves the original address; **Overwrite Headers** does not. Ensure direct
+clients cannot bypass the trusted proxy before trusting its headers.
+
+After deploying an image with this change, query the new JSON paths rather than
+inferring country from `user_ip = 0.0.0.0`:
+
+```sql
+SELECT
+    extra.collector.client_ip.:String AS client_ip,
+    extra.collector.ip_country.:String AS ip_country
+FROM evnt.local
+WHERE time >= now() - INTERVAL 1 HOUR
+LIMIT 10;
+```
+
+The fields appear only on newly processed events. Older rows and messages already
+in RabbitMQ do not gain lost IPv6 addresses or countries. Existing workers can
+write the added JSON fields, so the database and queue layout remain compatible.
+`XX` means unknown country and `T1` is Cloudflare's Tor marker, not an ISO country.
+
 ## Native async ClickHouse client
 
 The backend now uses `clickhouse-connect[async,tzdata]` 1.x. Rebuild the image or

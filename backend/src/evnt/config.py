@@ -101,6 +101,7 @@ class Snowplow(BaseModel):
     schemas: SnowplowSchemas = SnowplowSchemas()
     endpoints: SnowplowEndpoints = SnowplowEndpoints()
     user_ip_header: str = "X-Forwarded-For"
+    user_country_header: str | None = None
     # Iglu Central's `schemas/` directory, used to validate self-describing
     # JSON. A payload whose schema is missing here validates as `skipped`, so
     # the image build refuses to ship without it. The default is the vendored
@@ -114,6 +115,17 @@ class Snowplow(BaseModel):
         header_name = value.strip()
         if not header_name:
             raise ValueError("user_ip_header must not be empty")
+        return header_name
+
+    @field_validator("user_country_header")
+    @classmethod
+    def validate_user_country_header(cls, value: str | None) -> str | None:
+        """Country headers are optional and must be explicitly configured."""
+        if value is None:
+            return None
+        header_name = value.strip()
+        if not header_name:
+            raise ValueError("user_country_header must not be empty")
         return header_name
 
 

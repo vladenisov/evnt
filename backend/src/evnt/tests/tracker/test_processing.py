@@ -5,6 +5,7 @@ from ipaddress import IPv4Address
 import pytest
 
 from evnt.tracker.models import (
+    InsertModel,
     PayloadElementModel,
     UserAgentModel,
 )
@@ -24,6 +25,33 @@ class _RecordingLogger:
 
     def error(self, *args, **kwargs):  # pragma: no cover - not used in this test
         raise AssertionError(f"Unexpected error log: {args!r} {kwargs!r}")
+
+
+@pytest.mark.anyio
+async def test_process_data_owns_collector_metadata_without_mutating_parsed_extra(monkeypatch):
+    module = importlib.import_module("evnt.tracker.processing")
+    original = {"collector": {"client_ip": "spoofed", "ip_country": "ZZ"}, "keep": "value"}
+    model = InsertModel.model_construct(extra=original)
+
+    async def parse(*_args):
+        return model
+
+    monkeypatch.setattr(module, "parse_payload", parse)
+    body = PayloadElementModel.model_validate(
+        {
+            "aid": "example-app",
+            "e": "pv",
+            "p": "web",
+            "tv": "js-1.0.0",
+            "res": "1920x1080",
+        }
+    )
+    rows = await process_data(body, "", "2001:db8::7", None, user_country="CN")
+    assert rows[0]["extra"] == {
+        "keep": "value",
+        "collector": {"client_ip": "2001:db8::7", "ip_country": "CN"},
+    }
+    assert original["collector"] == {"client_ip": "spoofed", "ip_country": "ZZ"}
 
 
 @pytest.mark.anyio

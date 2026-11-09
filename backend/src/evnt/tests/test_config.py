@@ -1,5 +1,7 @@
 """Performance configuration defaults and environment overrides."""
 
+import pytest
+
 from evnt.config import Settings
 
 
@@ -20,3 +22,15 @@ def test_user_agent_cache_can_be_disabled(monkeypatch):
     monkeypatch.setenv("EVNT_PERFORMANCE__USER_AGENT_CACHE_SIZE", "0")
 
     assert Settings().performance.user_agent_cache_size == 0
+
+
+def test_country_header_is_opt_in_and_can_be_configured(monkeypatch):
+    assert Settings().common.snowplow.user_country_header is None
+    monkeypatch.setenv("EVNT_COMMON__SNOWPLOW__USER_COUNTRY_HEADER", " CF-IPCountry ")
+    assert Settings().common.snowplow.user_country_header == "CF-IPCountry"
+
+
+def test_country_header_rejects_empty_configuration(monkeypatch):
+    monkeypatch.setenv("EVNT_COMMON__SNOWPLOW__USER_COUNTRY_HEADER", "  ")
+    with pytest.raises(ValueError, match="user_country_header"):
+        Settings()
