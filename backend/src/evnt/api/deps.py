@@ -12,6 +12,9 @@ from evnt.crypto import Keyring
 from evnt.protocols import RowSink
 from evnt.tracker.ip import extract_ip_from_header
 
+# Two ASCII letters (ISO 3166-1 alpha-2, Cloudflare's XX) or Cloudflare's T1 (Tor).
+_COUNTRY_CODE = re.compile(r"[A-Z]{2}|T1")
+
 
 def get_db_connector(request: Request) -> RowSink:
     """Return the active ingest connector from application state."""
@@ -55,8 +58,12 @@ def get_client_country(request: Request) -> str | None:
     if not settings.security.trust_proxy_headers or header_name is None:
         return None
     for value in request.headers.getlist(header_name):
-        country = value.strip().upper()
-        if re.fullmatch(r"[A-Z]{2}|T1", country):
+        candidate = value.strip()
+        # Check ASCII before upper(): headers decode as latin-1, and "ß".upper() == "SS".
+        if not candidate.isascii():
+            continue
+        country = candidate.upper()
+        if _COUNTRY_CODE.fullmatch(country):
             return country
     return None
 

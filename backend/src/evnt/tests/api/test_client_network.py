@@ -3,8 +3,10 @@
 from ipaddress import IPv4Address
 
 import pytest
+from fastapi import Request
 from fastapi.testclient import TestClient
 
+from evnt.api.deps import get_client_country
 from evnt.config import settings
 from evnt.tests.support import build_app, minimal_tp2_payload
 
@@ -79,6 +81,23 @@ def test_country_header_accepts_only_country_codes(monkeypatch, connector, count
         )
     assert response.status_code == 204
     assert connector.inserted_batches[0][0]["extra"]["collector"]["ip_country"] == expected
+
+
+@pytest.mark.parametrize(
+    "raw_value,expected",
+    [
+        # Starlette decodes header bytes as latin-1, so 0xDF arrives as "ß",
+        # and "ß".upper() == "SS" would otherwise pass as South Sudan.
+        pytest.param(b"\xdf", None, id="latin1-sharp-s"),
+        pytest.param(b" de ", "DE", id="ascii-control"),
+    ],
+)
+def test_country_header_rejects_non_ascii_before_uppercasing(monkeypatch, raw_value, expected):
+    # TestClient re-encodes non-ASCII header bytes as UTF-8, so build the ASGI
+    # scope directly to reproduce the raw byte a real server passes through.
+    _configure(monkeypatch)
+    request = Request({"type": "http", "headers": [(b"cf-ipcountry", raw_value)]})
+    assert get_client_country(request) == expected
 
 
 @pytest.mark.parametrize("country_header", [None, "CF-IPCountry"])
