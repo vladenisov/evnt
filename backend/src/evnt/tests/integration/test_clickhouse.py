@@ -70,15 +70,17 @@ def encryption_key(monkeypatch):
     return base64.b64decode(public_key)
 
 
-def _send_encrypted(client, public_key, app_id, transport, *, compress=True):
+def _send_encrypted(client, public_key, app_id, transport, *, compress=True, headers=None):
     envelope = seal_envelope(
         public_key, "integration", orjson.dumps(_payload(app_id)), compress=compress
     )
     endpoint = settings.encryption.endpoint
     if transport == "pixel":
-        return client.get(endpoint, params={"d": base64.urlsafe_b64encode(envelope).decode()})
+        return client.get(
+            endpoint, params={"d": base64.urlsafe_b64encode(envelope).decode()}, headers=headers
+        )
     body = base64.b64encode(envelope) if transport == "base64" else envelope
-    return client.post(endpoint, content=body)
+    return client.post(endpoint, content=body, headers=headers)
 
 
 def test_db_init_is_idempotent(clickhouse_settings, ch, database):
@@ -131,6 +133,73 @@ def test_tracker_timestamps_keep_utc_millisecond_precision(tables, ch, database,
         milliseconds,
         milliseconds + 456,
     )
+
+
+@pytest.mark.parametrize("transport", ["post", "pixel", "sealed", "sealed_pixel"])
+@pytest.mark.parametrize(
+    "client_ip,legacy_ip",
+    [
+        ("2001:db8::7", "0.0.0.0"),
+        ("198.51.100.7", "198.51.100.7"),
+    ],
+)
+def test_client_network_json_roundtrip_keeps_ipv4_schema(
+    tables,
+    ch,
+    database,
+    monkeypatch,
+    request,
+    transport,
+    client_ip,
+    legacy_ip,
+):
+    from evnt.main import create_app
+
+    monkeypatch.setattr(settings.security, "trust_proxy_headers", True)
+    monkeypatch.setattr(
+        settings.common,
+        "snowplow",
+        settings.common.snowplow.model_copy(
+            update={
+                "user_ip_header": "CF-Connecting-IP",
+                "user_country_header": "CF-IPCountry",
+            }
+        ),
+    )
+    public_key = (
+        request.getfixturevalue("encryption_key") if transport.startswith("sealed") else None
+    )
+    app_id = f"it-network-{uuid.uuid4().hex[:8]}"
+    headers = {"CF-Connecting-IP": client_ip, "CF-IPCountry": "CN"}
+    with TestClient(create_app()) as client:
+        if public_key is not None:
+            response = _send_encrypted(
+                client,
+                public_key,
+                app_id,
+                "pixel" if transport == "sealed_pixel" else "binary",
+                headers=headers,
+            )
+        elif transport == "post":
+            response = client.post(
+                settings.common.snowplow.endpoints.post_endpoint,
+                json=_payload(app_id),
+                headers=headers,
+            )
+        else:
+            response = client.get(
+                settings.common.snowplow.endpoints.get_endpoint,
+                params=_payload(app_id)["data"][0],
+                headers=headers,
+            )
+        assert response.status_code in (200, 204)
+    assert _rows_for(ch, database, app_id)
+    row = ch.query(
+        f"SELECT toTypeName(user_ip), toString(user_ip), extra.collector.client_ip.:String, "
+        f"extra.collector.ip_country.:String FROM {database}.local WHERE app_id = %(app_id)s",
+        parameters={"app_id": app_id},
+    ).first_row
+    assert row == ("IPv4", legacy_ip, client_ip, "CN")
 
 
 def test_post_batch_lands_in_clickhouse(tables, ch, database):

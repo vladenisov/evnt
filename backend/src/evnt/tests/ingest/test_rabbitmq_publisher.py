@@ -9,6 +9,7 @@ publish-failure fallback that ``test_rabbitmq.py`` does not.
 
 import asyncio
 from datetime import UTC, datetime
+from ipaddress import IPv4Address
 from uuid import UUID
 
 import pytest
@@ -86,6 +87,26 @@ def _publisher(channel=None, *, cluster_name=None):
         database="evnt",
         cluster_name=cluster_name,
     )
+
+
+@pytest.mark.anyio
+async def test_publisher_preserves_original_client_metadata(anyio_backend):
+    channel = _RecordingChannel()
+    publisher = _publisher(channel)
+    metadata = {"client_ip": "2001:db8::7", "ip_country": "CN"}
+    await publisher.insert_rows(
+        [
+            {
+                "user_ip": IPv4Address("0.0.0.0"),
+                "extra": {"collector": metadata},
+            }
+        ]
+    )
+    payload = QueuedInsertPayload.model_validate_json(
+        channel.default_exchange.published[0]["message"].body,
+    )
+    assert payload.rows[0]["user_ip"] == "0.0.0.0"
+    assert payload.rows[0]["extra"]["collector"] == metadata
 
 
 @pytest.mark.anyio

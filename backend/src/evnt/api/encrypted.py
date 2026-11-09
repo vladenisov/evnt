@@ -25,7 +25,7 @@ from starlette.status import (
     HTTP_413_CONTENT_TOO_LARGE,
 )
 
-from evnt.api.deps import ClientIP, DbConnector, KeyringDep
+from evnt.api.deps import ClientCountry, ClientIP, DbConnector, KeyringDep
 from evnt.config import settings
 from evnt.constants import CONTENT_TYPE_GIF, CONTENT_TYPE_JAVASCRIPT, TRACKING_PIXEL
 from evnt.crypto import DecryptionError, Keyring, coerce_envelope_bytes, open_envelope
@@ -171,6 +171,7 @@ async def encrypted_post(
     connector: DbConnector,
     keyring: KeyringDep,
     user_ip: ClientIP,
+    user_country: ClientCountry,
     user_agent: Annotated[str | None, Header()] = None,
     cookie: Annotated[str | None, Header()] = None,
 ) -> Response:
@@ -185,7 +186,7 @@ async def encrypted_post(
     raw = await _read_limited_body(request, settings.encryption.max_envelope_bytes)
     body = _unseal(keyring, raw)
 
-    data = await process_data(body, user_agent, user_ip, cookie)
+    data = await process_data(body, user_agent, user_ip, cookie, user_country=user_country)
     await connector.insert_rows(data)
     return Response(status_code=HTTP_204_NO_CONTENT)
 
@@ -196,6 +197,7 @@ async def encrypted_get(
     d: Annotated[str, Query(description="Base64url-encoded envelope")],
     keyring: KeyringDep,
     user_ip: ClientIP,
+    user_country: ClientCountry,
     user_agent: Annotated[str | None, Header()] = None,
     cookie: Annotated[str | None, Header()] = None,
 ) -> Response:
@@ -217,7 +219,7 @@ async def encrypted_get(
         raise _rejection("query parameter is not ASCII") from exc
     body = _unseal(keyring, raw)
 
-    data = await process_data(body, user_agent, user_ip, cookie)
+    data = await process_data(body, user_agent, user_ip, cookie, user_country=user_country)
     await connector.insert_rows(data)
     return Response(content=TRACKING_PIXEL, media_type=CONTENT_TYPE_GIF)
 

@@ -1,5 +1,6 @@
 """FastAPI dependencies shared by the collector routes."""
 
+import re
 from ipaddress import IPv4Address, IPv6Address
 from typing import Annotated
 
@@ -48,6 +49,19 @@ def get_client_ip(request: Request) -> IPv4Address | IPv6Address | None:
     return None
 
 
+def get_client_country(request: Request) -> str | None:
+    """Read a country code only from an explicitly trusted proxy header."""
+    header_name = settings.common.snowplow.user_country_header
+    if not settings.security.trust_proxy_headers or header_name is None:
+        return None
+    for value in request.headers.getlist(header_name):
+        country = value.strip().upper()
+        if re.fullmatch(r"[A-Z]{2}|T1", country):
+            return country
+    return None
+
+
 DbConnector = Annotated[RowSink, Depends(get_db_connector)]
 KeyringDep = Annotated[Keyring, Depends(get_keyring)]
 ClientIP = Annotated[IPv4Address | IPv6Address | None, Depends(get_client_ip)]
+ClientCountry = Annotated[str | None, Depends(get_client_country)]

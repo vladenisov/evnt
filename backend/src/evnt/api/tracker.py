@@ -11,7 +11,7 @@ from typing import Annotated
 from fastapi import APIRouter, Header, Query, Response
 from starlette.status import HTTP_204_NO_CONTENT
 
-from evnt.api.deps import ClientIP, DbConnector
+from evnt.api.deps import ClientCountry, ClientIP, DbConnector
 from evnt.config import settings
 from evnt.constants import CONTENT_TYPE_GIF, TRACKING_PIXEL
 from evnt.observability.tracing import async_capture_span
@@ -32,11 +32,12 @@ async def tracker_post(
     connector: DbConnector,
     body: PayloadModel,
     user_ip: ClientIP,
+    user_country: ClientCountry,
     user_agent: UserAgent = None,
     cookie: Cookie = None,
 ) -> Response:
     """Store a batch POSTed by a Snowplow tracker."""
-    data = await process_data(body, user_agent, user_ip, cookie)
+    data = await process_data(body, user_agent, user_ip, cookie, user_country=user_country)
     await connector.insert_rows(data)
     return Response(status_code=HTTP_204_NO_CONTENT)
 
@@ -46,11 +47,12 @@ async def tracker_get(
     connector: DbConnector,
     params: Annotated[PayloadElementModel, Query()],
     user_ip: ClientIP,
+    user_country: ClientCountry,
     user_agent: UserAgent = None,
     cookie: Cookie = None,
 ) -> Response:
     """Store a single event sent as a query string and return the pixel."""
-    data = await process_data(params, user_agent, user_ip, cookie)
+    data = await process_data(params, user_agent, user_ip, cookie, user_country=user_country)
     await connector.insert_rows(data)
     return Response(content=TRACKING_PIXEL, media_type=CONTENT_TYPE_GIF)
 

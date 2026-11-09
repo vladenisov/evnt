@@ -8,7 +8,7 @@ from typing import Any
 import structlog
 
 from evnt.observability.tracing import async_capture_span
-from evnt.tracker.ip import convert_ip
+from evnt.tracker.ip import convert_ip, extract_ip_from_header
 from evnt.tracker.models import (
     PayloadElementModel,
     PayloadModel,
@@ -25,6 +25,7 @@ async def process_data(
     user_agent: str | None,
     user_ip: IPv4Address | IPv6Address | str | None,
     cookies: str | None,
+    user_country: str | None = None,
 ) -> list[dict[str, Any]]:
     """
     Process incoming event data from various sources.
@@ -40,11 +41,14 @@ async def process_data(
         user_agent: User agent string from headers
         user_ip: IP address from headers
         cookies: Cookie string from headers
+        user_country: Validated country code from the trusted proxy header,
+            stored as ``extra.collector.ip_country``
 
     Returns:
         List of processed event records ready for storage
     """
-    user_ip = convert_ip(user_ip)
+    client_ip = extract_ip_from_header(user_ip) if isinstance(user_ip, str) else user_ip
+    user_ip = convert_ip(client_ip)
     ua_data = await parse_agent_for_insert_async(user_agent)
 
     # Extract payload data
@@ -56,5 +60,12 @@ async def process_data(
         payload_data = await parse_payload(item, ua_data, user_ip, cookies)
 
         item_data = dump_insert_model(payload_data)
+        item_data["extra"] = {
+            **item_data["extra"],
+            "collector": {
+                "client_ip": str(client_ip) if client_ip is not None else "",
+                "ip_country": user_country or "",
+            },
+        }
         result.append(item_data)
     return result
