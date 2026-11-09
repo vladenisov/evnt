@@ -36,19 +36,21 @@ def get_keyring(request: Request) -> Keyring:
 def get_client_ip(request: Request) -> IPv4Address | IPv6Address | None:
     """Return the end user's IP address.
 
-    With ``security.trust_proxy_headers`` on, the first parseable value of the
-    configured forwarding header wins. With it off, the header is ignored and
-    the direct peer address is used, so a client cannot spoof its own IP.
+    With ``security.trust_proxy_headers`` on, the configured forwarding headers
+    are checked in order and the first parseable value wins, so a request that
+    lacks the preferred header (another proxy, no Cloudflare) still has an IP.
+    With it off, the headers are ignored and the direct peer address is used,
+    so a client cannot spoof its own IP.
     """
     if not settings.security.trust_proxy_headers:
         host = request.client.host if request.client else None
         return extract_ip_from_header(host)
 
-    header_name = settings.common.snowplow.user_ip_header
-    for header_value in request.headers.getlist(header_name):
-        parsed_ip = extract_ip_from_header(header_value)
-        if parsed_ip is not None:
-            return parsed_ip
+    for header_name in settings.common.snowplow.user_ip_headers:
+        for header_value in request.headers.getlist(header_name):
+            parsed_ip = extract_ip_from_header(header_value)
+            if parsed_ip is not None:
+                return parsed_ip
     return None
 
 

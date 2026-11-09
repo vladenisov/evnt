@@ -100,6 +100,8 @@ class Snowplow(BaseModel):
 
     schemas: SnowplowSchemas = SnowplowSchemas()
     endpoints: SnowplowEndpoints = SnowplowEndpoints()
+    # One header, or a comma-separated list checked in order (the first
+    # parseable value wins), e.g. "CF-Connecting-IP,X-Forwarded-For".
     user_ip_header: str = "X-Forwarded-For"
     user_country_header: str | None = None
     # Iglu Central's `schemas/` directory, used to validate self-describing
@@ -111,11 +113,16 @@ class Snowplow(BaseModel):
     @field_validator("user_ip_header")
     @classmethod
     def validate_user_ip_header(cls, value: str) -> str:
-        """Ensure the user IP header name is not empty."""
-        header_name = value.strip()
-        if not header_name:
-            raise ValueError("user_ip_header must not be empty")
-        return header_name
+        """Normalize the comma-separated header list; every entry must be non-empty."""
+        header_names = [name.strip() for name in value.split(",")]
+        if not all(header_names):
+            raise ValueError("user_ip_header must list non-empty header names")
+        return ",".join(header_names)
+
+    @property
+    def user_ip_headers(self) -> tuple[str, ...]:
+        """Client IP headers in priority order."""
+        return tuple(name.strip() for name in self.user_ip_header.split(","))
 
     @field_validator("user_country_header")
     @classmethod

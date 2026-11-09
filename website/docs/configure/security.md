@@ -8,7 +8,7 @@ The most important settings to know about:
 | `EVNT_SECURITY__CORS_ALLOWED_ORIGINS` | `["*"]` | JSON array of bare HTTP(S) origins (e.g. `["https://example.com"]`), or `["*"]`. |
 | `EVNT_SECURITY__CORS_ALLOW_CREDENTIALS` | `true` | Credentialed CORS responses include `Access-Control-Allow-Credentials: true`. |
 | `EVNT_SECURITY__TRUSTED_HOSTS` | `["*"]` | Allowed `Host` header values. |
-| `EVNT_SECURITY__TRUST_PROXY_HEADERS` | `true` | When enabled, the client IP is taken from the configured proxy header (`X-Forwarded-For` by default). Set to `false` if `evnt` is exposed directly (no trusted reverse proxy) so clients cannot spoof their IP. |
+| `EVNT_SECURITY__TRUST_PROXY_HEADERS` | `true` | When enabled, the client IP is taken from the configured proxy headers (`X-Forwarded-For` by default; `EVNT_COMMON__SNOWPLOW__USER_IP_HEADER` accepts a comma-separated list checked in order). Set to `false` if `evnt` is exposed directly (no trusted reverse proxy) so clients cannot spoof their IP. |
 | `EVNT_COMMON__SNOWPLOW__USER_COUNTRY_HEADER` | unset | Optional trusted country header. Used only with proxy trust enabled; omitted or invalid values do not populate `extra.collector.ip_country`. |
 | `EVNT_SECURITY__ENABLE_HTTPS_REDIRECT` | `false` | Adds an HSTS header and HTTPS redirect when enabled. |
 | `EVNT_SECURITY__MAX_REQUEST_BODY_BYTES` | `10485760` | Ceiling on any request body, enforced before the handler runs. Refused with `413`. The encrypted endpoint applies its own, much tighter limit on top. |

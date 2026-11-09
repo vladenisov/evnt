@@ -38,9 +38,16 @@ Country-header ingestion is opt-in. Behind a trusted Cloudflare origin, set:
 
 ```bash
 EVNT_SECURITY__TRUST_PROXY_HEADERS=true
-EVNT_COMMON__SNOWPLOW__USER_IP_HEADER=CF-Connecting-IP
+EVNT_COMMON__SNOWPLOW__USER_IP_HEADER=CF-Connecting-IP,X-Forwarded-For
 EVNT_COMMON__SNOWPLOW__USER_COUNTRY_HEADER=CF-IPCountry
 ```
+
+`USER_IP_HEADER` accepts a comma-separated list checked in order. Keep
+`X-Forwarded-For` after `CF-Connecting-IP` when any hostname reaches the
+collector through a proxy other than Cloudflare: with `CF-Connecting-IP` alone,
+those requests carry no `CF-*` headers and their events lose the client IP
+(`user_ip` becomes `0.0.0.0`, `client_ip` empty). Such requests also have no
+`CF-IPCountry`; derive their country from the IP instead.
 
 Use the original Cloudflare header, not `CF-Pseudo-IPv4`. Pseudo IPv4 **Add Header**
 preserves the original address; **Overwrite Headers** does not. Ensure direct

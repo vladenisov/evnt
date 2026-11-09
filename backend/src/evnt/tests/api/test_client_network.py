@@ -11,18 +11,71 @@ from evnt.config import settings
 from evnt.tests.support import build_app, minimal_tp2_payload
 
 
-def _configure(monkeypatch, *, trust=True, country_header="CF-IPCountry"):
+def _configure(
+    monkeypatch, *, trust=True, ip_header="CF-Connecting-IP", country_header="CF-IPCountry"
+):
     monkeypatch.setattr(settings.security, "trust_proxy_headers", trust)
     monkeypatch.setattr(
         settings.common,
         "snowplow",
         settings.common.snowplow.model_copy(
             update={
-                "user_ip_header": "CF-Connecting-IP",
+                "user_ip_header": ip_header,
                 "user_country_header": country_header,
             }
         ),
     )
+
+
+@pytest.mark.parametrize("method", ["POST", "GET"])
+@pytest.mark.parametrize(
+    "headers,client_ip,legacy_ip,country",
+    [
+        pytest.param(
+            {
+                "CF-Connecting-IP": "2001:db8::7",
+                "CF-IPCountry": "DE",
+                "X-Forwarded-For": "198.51.100.99",
+            },
+            "2001:db8::7",
+            "0.0.0.0",
+            "DE",
+            id="cloudflare-header-wins",
+        ),
+        # A hostname served by another proxy reaches the origin without CF-* headers.
+        pytest.param(
+            {"X-Forwarded-For": "198.51.100.7, 10.0.0.1"},
+            "198.51.100.7",
+            "198.51.100.7",
+            "",
+            id="other-proxy-falls-back",
+        ),
+        pytest.param(
+            {"CF-Connecting-IP": "unknown", "X-Forwarded-For": "198.51.100.7"},
+            "198.51.100.7",
+            "198.51.100.7",
+            "",
+            id="unparseable-first-header",
+        ),
+    ],
+)
+def test_ip_headers_are_checked_in_priority_order(
+    monkeypatch, connector, method, headers, client_ip, legacy_ip, country
+):
+    _configure(monkeypatch, ip_header="CF-Connecting-IP,X-Forwarded-For")
+    app = build_app(monkeypatch)
+    app.state.connector = connector
+    payload = minimal_tp2_payload()
+    with TestClient(app) as client:
+        response = (
+            client.post("/tracker", json=payload, headers=headers)
+            if method == "POST"
+            else client.get("/i", params=payload["data"][0], headers=headers)
+        )
+    assert response.status_code in (200, 204)
+    row = connector.inserted_batches[0][0]
+    assert row["user_ip"] == IPv4Address(legacy_ip)
+    assert row["extra"]["collector"] == {"client_ip": client_ip, "ip_country": country}
 
 
 @pytest.mark.parametrize("method", ["POST", "GET"])

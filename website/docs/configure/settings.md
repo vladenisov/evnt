@@ -21,7 +21,7 @@ A starter [`.env.example`](https://github.com/vladenisov/evnt/blob/main/.env.exa
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `EVNT_COMMON__SNOWPLOW__USER_IP_HEADER` | `X-Forwarded-For` | Trusted proxy header containing the original client IP. For Cloudflare, use `CF-Connecting-IP`. |
+| `EVNT_COMMON__SNOWPLOW__USER_IP_HEADER` | `X-Forwarded-For` | Trusted proxy header containing the original client IP, or a comma-separated list checked in order (the first parseable value wins). Behind Cloudflare, use `CF-Connecting-IP,X-Forwarded-For`: `X-Forwarded-For` covers requests reaching the collector through another proxy. |
 | `EVNT_COMMON__SNOWPLOW__USER_COUNTRY_HEADER` | unset | Optional trusted proxy country header, for example `CF-IPCountry`. Omit it to disable country-header ingestion. |
 
 Both headers require `EVNT_SECURITY__TRUST_PROXY_HEADERS=true`. With proxy

@@ -24,6 +24,23 @@ def test_user_agent_cache_can_be_disabled(monkeypatch):
     assert Settings().performance.user_agent_cache_size == 0
 
 
+def test_user_ip_header_accepts_an_ordered_list(monkeypatch):
+    assert Settings().common.snowplow.user_ip_headers == ("X-Forwarded-For",)
+    monkeypatch.setenv(
+        "EVNT_COMMON__SNOWPLOW__USER_IP_HEADER", " CF-Connecting-IP , X-Forwarded-For "
+    )
+    snowplow = Settings().common.snowplow
+    assert snowplow.user_ip_header == "CF-Connecting-IP,X-Forwarded-For"
+    assert snowplow.user_ip_headers == ("CF-Connecting-IP", "X-Forwarded-For")
+
+
+@pytest.mark.parametrize("value", ["  ", "CF-Connecting-IP,", ",X-Forwarded-For", "A,,B"])
+def test_user_ip_header_rejects_empty_entries(monkeypatch, value):
+    monkeypatch.setenv("EVNT_COMMON__SNOWPLOW__USER_IP_HEADER", value)
+    with pytest.raises(ValueError, match="user_ip_header"):
+        Settings()
+
+
 def test_country_header_is_opt_in_and_can_be_configured(monkeypatch):
     assert Settings().common.snowplow.user_country_header is None
     monkeypatch.setenv("EVNT_COMMON__SNOWPLOW__USER_COUNTRY_HEADER", " CF-IPCountry ")
