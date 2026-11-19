@@ -17,6 +17,7 @@ from aio_pika.exceptions import ChannelInvalidStateError, ConnectionClosed, Deli
 from clickhouse_connect.driver.exceptions import DataError
 from pamqp.commands import Basic
 
+import evnt.ingest.rabbitmq as publisher_module
 from evnt.config import RabbitMQConfig
 from evnt.exceptions import IngestUnavailableError
 from evnt.ingest.health import RabbitMQHealthChecker
@@ -243,6 +244,16 @@ def test_backoff_seconds_grows_exponentially_and_caps():
     assert worker._backoff_seconds() == RabbitMQBatchWorker.MAX_BACKOFF_SECONDS
 
 
+def test_backoff_survives_a_failure_count_beyond_float_range():
+    # About 17 hours of a 60 s backoff; 2.0 ** 1024 would raise OverflowError
+    # and stop the worker in the middle of a long outage.
+    worker = _worker(_BatchSink(), retry_delay_ms=1000)
+    worker.failure_counts["evnt"] = 5000
+
+    assert worker._backoff_seconds() == RabbitMQBatchWorker.MAX_BACKOFF_SECONDS
+    assert worker._pending_backoff_seconds() == RabbitMQBatchWorker.MAX_BACKOFF_SECONDS
+
+
 @pytest.mark.anyio
 async def test_flush_failure_increments_failure_count_then_resets(anyio_backend):
     sink = _BatchSink(fail=True)
@@ -434,6 +445,34 @@ async def test_publisher_caps_unconfirmed_publishes(anyio_backend):
     # a slot instead of piling more unconfirmed messages onto a stalled channel.
     assert exchange.started == 3
     assert all(isinstance(result, IngestUnavailableError) for result in results)
+
+
+@pytest.mark.anyio
+async def test_publishes_waiting_for_a_slot_hold_no_encoded_body(anyio_backend, monkeypatch):
+    encoded: list[int] = []
+    real_encode = publisher_module._encode_queued_insert_payload
+
+    def _counting_encode(table_group, rows):
+        encoded.append(len(rows))
+        return real_encode(table_group, rows)
+
+    monkeypatch.setattr(publisher_module, "_encode_queued_insert_payload", _counting_encode)
+    publisher = _publisher_with(
+        RabbitMQConfig(
+            publish_timeout_seconds=0.1,
+            max_inflight_publishes=2,
+            coalesce_window_ms=0,
+        ),
+        _RecordingChannel(exchange=_StalledExchange()),
+    )
+
+    await asyncio.gather(
+        *(publisher.insert_rows([{"aid": "a"}]) for _ in range(10)),
+        return_exceptions=True,
+    )
+
+    # Only the publishes that got a slot built a message body.
+    assert len(encoded) == 2
 
 
 @pytest.mark.anyio

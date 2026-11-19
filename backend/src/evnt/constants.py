@@ -110,7 +110,8 @@ DEFAULT_RABBITMQ_MAX_INFLIGHT_PUBLISHES: Final[int] = 200
 # publish costs ~250-300 us of CPU, more than processing a typical request, so at
 # thousands of requests per second merging saves cores for a few ms of latency.
 DEFAULT_RABBITMQ_COALESCE_WINDOW_MS: Final[int] = 5
-# Upper bound on rows per merged message (~1.8 KB each, so ~180 KB at most).
+# Upper bound on rows per merged message (~1.8 KB each, so ~180 KB at most);
+# a single larger request is published alone, never merged.
 DEFAULT_RABBITMQ_COALESCE_MAX_ROWS: Final[int] = 100
 # Insert failures that are not outages and that the worker cannot pin on rows in
 # the same flush (an unexplained error, or bad rows with no successful insert

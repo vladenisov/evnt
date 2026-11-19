@@ -33,7 +33,9 @@ class RowCoalescer:
     """Collect rows per table group and hand each batch to ``flush`` once.
 
     A batch goes out when it holds ``max_rows`` rows or ``window_seconds`` after
-    its first rows arrived, whichever comes first. Every caller waits for the
+    its first rows arrived, whichever comes first. Rows that would push a batch
+    past ``max_rows`` start a new one, so a batch holds at most ``max_rows``
+    rows or the rows of one call, whichever is more. Every caller waits for the
     batch its rows went into and gets that flush's outcome: ``None`` once it
     succeeded, or the exception it raised. With ``window_seconds == 0`` each call
     is flushed on its own, which is the behaviour without merging.
@@ -59,6 +61,12 @@ class RowCoalescer:
 
         loop = asyncio.get_running_loop()
         buffer = self._buffers.get(table_group)
+        if buffer is not None and len(buffer.rows) + len(rows) > self.max_rows:
+            # Merging must never make a message larger than ``max_rows``: send
+            # what is buffered and start a new batch with these rows. A single
+            # call larger than that still goes out alone, as without merging.
+            self._flush_buffer(table_group)
+            buffer = None
         if buffer is None:
             buffer = self._buffers[table_group] = _Buffer()
             # A fresh context: the flush serves many requests, so it must not

@@ -67,7 +67,8 @@ On startup the app (and, in `rabbitmq` mode, the worker) retries the ClickHouse 
 In `rabbitmq` mode a request returns only after the broker confirms the message
 holding its events. Rows from requests that arrive within
 `coalesce_window_ms` of each other share one message (up to
-`coalesce_max_rows` rows), because a publish costs more CPU than processing a
+`coalesce_max_rows` rows; a single request with more rows than that is
+published as a message of its own, as without merging), because a publish costs more CPU than processing a
 typical request: merging cut collector CPU per request by about 90% in our
 measurements, for a few milliseconds of added latency. If one row in a merged
 message fails ClickHouse validation, the worker inserts the other rows and
@@ -115,13 +116,14 @@ resend the batch. A message cut off by the timeout may still be stored once the
 broker recovers, so a retry can duplicate events; deduplicate on `eid`
 downstream if that matters.
 
-The readiness check (`/health`) runs on a connection of its own and reports
+The readiness check (`GET /`) runs on a connection of its own and reports
 whether the ingest queues exist. It stays healthy during a broker alarm, when
 publishes answer `503`: the broker is shared by every collector instance, so
 taking instances out of rotation would not help.
 
 The worker prefetches `prefetch_count` messages (default `500`). A merged
-message can hold up to `coalesce_max_rows` rows, so lower `prefetch_count` if
+message holds up to `coalesce_max_rows` rows (a single larger request is
+never merged), so lower `prefetch_count` if
 worker memory matters more than throughput.
 
 ## Secrets

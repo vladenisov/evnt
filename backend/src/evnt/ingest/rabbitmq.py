@@ -259,14 +259,6 @@ class RabbitMQPublisher:
     async def _publish_rows(self, table_group: str, rows: list[dict[str, Any]]) -> None:
         """Publish one message holding ``rows`` and wait for its confirm."""
 
-        body = _encode_queued_insert_payload(table_group, rows)
-        message = Message(
-            body=body,
-            content_type="application/json",
-            delivery_mode=DeliveryMode.PERSISTENT,
-            type="evnt.insert",
-        )
-
         # One deadline covers waiting for a window slot and the confirm. Under a
         # broker memory or disk alarm confirms stop entirely; the request then fails
         # fast with a 503 the tracker retries, instead of waiting out the alarm. A
@@ -274,9 +266,19 @@ class RabbitMQPublisher:
         # nack and an unroutable return are the same "not stored, retry later". A
         # publish cut off after it was written may still be stored, so a retry can
         # duplicate it; events carry ``eid`` for deduplication.
+        #
+        # The body is encoded only once a slot is held: while confirms stall,
+        # publishes waiting for a slot then keep no encoded copy of their rows,
+        # so ``max_inflight_publishes`` bounds the encoded bodies in memory.
         try:
             async with asyncio.timeout(self.config.publish_timeout_seconds):
                 async with self._inflight:
+                    message = Message(
+                        body=_encode_queued_insert_payload(table_group, rows),
+                        content_type="application/json",
+                        delivery_mode=DeliveryMode.PERSISTENT,
+                        type="evnt.insert",
+                    )
                     await self.channel.default_exchange.publish(
                         message,
                         routing_key=self.config.queue_name,

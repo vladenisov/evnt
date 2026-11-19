@@ -143,3 +143,30 @@ async def test_the_window_timer_does_not_flush_twice_after_a_full_batch(anyio_ba
     await asyncio.sleep(0.05)
 
     assert len(flush.calls) == 1
+
+
+@pytest.mark.anyio
+async def test_rows_that_would_overflow_a_batch_start_a_new_one(anyio_backend):
+    flush = _RecordingFlush()
+    coalescer = RowCoalescer(flush, window_seconds=0.01, max_rows=100)
+
+    await asyncio.gather(
+        coalescer.add("evnt", [{"n": i} for i in range(99)]),
+        coalescer.add("evnt", [{"m": i} for i in range(100)]),
+    )
+
+    assert [len(rows) for _, rows in flush.calls] == [99, 100]
+
+
+@pytest.mark.anyio
+async def test_a_call_larger_than_max_rows_is_flushed_alone(anyio_backend):
+    flush = _RecordingFlush()
+    coalescer = RowCoalescer(flush, window_seconds=0.01, max_rows=10)
+
+    await asyncio.gather(
+        coalescer.add("evnt", [{"a": 1}]),
+        coalescer.add("evnt", [{"big": i} for i in range(25)]),
+        coalescer.add("evnt", [{"b": 1}]),
+    )
+
+    assert [len(rows) for _, rows in flush.calls] == [1, 25, 1]

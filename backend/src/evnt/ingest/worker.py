@@ -56,6 +56,8 @@ logger = structlog.get_logger(__name__)
 # spending about two inserts per row on every retry. The driver's DataError and
 # a message on its last attempt while other inserts succeed are not capped.
 _MAX_FAILED_INSERTS_WITHOUT_SUCCESS = 16
+# 2**32 times any retry delay is far beyond every sensible MAX_BACKOFF_SECONDS.
+_MAX_BACKOFF_EXPONENT = 32
 
 
 @dataclass(slots=True)
@@ -221,6 +223,17 @@ class RabbitMQBatchWorker:
                     await next_message_task
             await self.flush_all()
 
+    def _exponential_delay(self, failures: int) -> float:
+        """Return ``retry_delay * 2 ** (failures - 1)`` without overflowing.
+
+        Failure counts keep growing for as long as an outage lasts, and
+        ``2.0 ** 1024`` raises OverflowError (after about 17 hours at 60 s), so
+        the exponent is clamped; the caller caps the delay anyway.
+        """
+
+        exponent = min(failures - 1, _MAX_BACKOFF_EXPONENT)
+        return float(self.retry_delay * 2.0**exponent)
+
     def _backoff_seconds(self) -> float:
         """Return the current backoff delay derived from failure counts.
 
@@ -233,7 +246,7 @@ class RabbitMQBatchWorker:
         if max_failures <= 0:
             return 0.0
         # base * 2**(n-1), capped, so the first failure waits ``retry_delay``.
-        delay: float = self.retry_delay * 2.0 ** (max_failures - 1)
+        delay = self._exponential_delay(max_failures)
         return min(delay, self.MAX_BACKOFF_SECONDS)
 
     def _pending_backoff_seconds(self) -> float:
@@ -247,7 +260,7 @@ class RabbitMQBatchWorker:
         max_failures = max(unapplied_failures, default=0)
         if max_failures <= 0:
             return 0.0
-        delay: float = self.retry_delay * 2.0 ** (max_failures - 1)
+        delay = self._exponential_delay(max_failures)
         return min(delay, self.MAX_BACKOFF_SECONDS)
 
     async def _apply_backoff(self) -> None:
