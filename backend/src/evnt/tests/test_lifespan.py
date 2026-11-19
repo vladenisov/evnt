@@ -17,6 +17,7 @@ class _Closeable:
         self.closed = False
         self.fail_close = fail_close
         self.channel = SimpleNamespace(name="channel")
+        self.connection = SimpleNamespace(name="connection")
 
     async def close(self):
         self.closed = True
@@ -90,15 +91,25 @@ async def test_rabbitmq_mode_uses_the_publisher(monkeypatch, no_iglu):
         return publisher
 
     class _FakeHealthChecker:
-        def __init__(self, channel, *queues):
-            self.channel = channel
+        def __init__(self, connection, *queues, timeout_seconds):
+            self.connection = connection
             self.queues = queues
+            self.timeout_seconds = timeout_seconds
+
+        async def close(self):
+            await self.connection.close()
 
         async def check(self):
             return {"rabbitmq": True}
 
     monkeypatch.setattr(evnt.ingest.RabbitMQPublisher, "create", staticmethod(fake_create))
     monkeypatch.setattr(evnt.ingest, "RabbitMQHealthChecker", _FakeHealthChecker)
+    check_connection = _Closeable()
+
+    async def fake_connect(config):
+        return check_connection
+
+    monkeypatch.setattr(evnt.ingest.rabbitmq, "connect_rabbitmq", fake_connect)
     monkeypatch.setattr(lifespan_module.settings.ingest, "mode", "rabbitmq")
     app = FastAPI()
 
@@ -106,9 +117,13 @@ async def test_rabbitmq_mode_uses_the_publisher(monkeypatch, no_iglu):
         assert app.state.connector is publisher
         assert app.state.ingest_mode == "rabbitmq"
         assert created["config"] is lifespan_module.settings.ingest.rabbitmq
-        assert app.state.health_checker.checker.channel is publisher.channel
+        # The check runs on a connection of its own, so it neither closes the
+        # publisher's channel nor queues behind publishes stalled by an alarm.
+        assert app.state.health_checker.checker.connection is check_connection
+        assert app.state.health_checker.checker.connection is not publisher.connection
 
     assert publisher.closed
+    assert check_connection.closed
 
 
 @pytest.mark.anyio
@@ -161,3 +176,39 @@ def test_warm_known_iglu_schemas_logs_a_summary(monkeypatch):
     assert warnings[0][2]["schema"] == "iglu:a/c/jsonschema/1-0-0"
     summary = next(call for call in logger.calls if call[1] == "Iglu schema cache warmed")
     assert summary[2] == {"loaded_count": 1, "warning_count": 1, "skipped_count": 1}
+
+
+@pytest.mark.anyio
+async def test_startup_warms_the_user_agent_parser_before_serving(
+    direct_backend, no_iglu, monkeypatch
+):
+    calls = []
+    monkeypatch.setattr(lifespan_module, "warm_user_agent_parser", lambda: calls.append("warm"))
+    app = FastAPI()
+
+    async with lifespan_module.lifespan(app):
+        assert calls == ["warm"]
+
+
+@pytest.mark.anyio
+async def test_user_agent_warm_up_failure_does_not_stop_startup(
+    direct_backend, no_iglu, monkeypatch
+):
+    logger = _RecordingLogger()
+
+    def fail_warm():
+        raise RuntimeError("regex blew up")
+
+    monkeypatch.setattr(lifespan_module, "logger", logger)
+    monkeypatch.setattr(lifespan_module, "warm_user_agent_parser", fail_warm)
+    app = FastAPI()
+
+    async with lifespan_module.lifespan(app):
+        assert isinstance(app.state.connector, evnt.storage.clickhouse.ClickHouseConnector)
+
+    assert direct_backend.client.closed
+    assert (
+        "warning",
+        "Failed to warm user-agent parser",
+        {"error": "regex blew up"},
+    ) in logger.calls

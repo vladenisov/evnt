@@ -96,6 +96,29 @@ DEFAULT_RABBITMQ_PREFETCH_COUNT: Final[int] = DEFAULT_RABBITMQ_BATCH_SIZE
 DEFAULT_RABBITMQ_BATCH_TIMEOUT_MS: Final[int] = 1000
 DEFAULT_RABBITMQ_RETRY_DELAY_MS: Final[int] = 1000
 DEFAULT_RABBITMQ_INSERT_TIMEOUT_SECONDS: Final[float] = 60.0
+# A publish waits for the broker's confirm. Under a memory or disk alarm the broker
+# stops reading, and without a deadline every request would wait for as long as the
+# alarm lasts, piling up in memory. Five seconds is far above a normal confirm
+# (about a millisecond) and well under the trackers' own request timeouts.
+DEFAULT_RABBITMQ_PUBLISH_TIMEOUT_SECONDS: Final[float] = 5.0
+# Unconfirmed messages allowed per process. With coalescing a message holds up to
+# COALESCE_MAX_ROWS rows (~1.8 KB each, so up to ~180 KB), and at 20k requests/s
+# only a handful are in flight; the cap bounds memory to ~36 MB when confirms
+# stall. Without coalescing it still allows far more than a broker confirms.
+DEFAULT_RABBITMQ_MAX_INFLIGHT_PUBLISHES: Final[int] = 200
+# Rows from requests arriving within this window share one RabbitMQ message. A
+# publish costs ~250-300 us of CPU, more than processing a typical request, so at
+# thousands of requests per second merging saves cores for a few ms of latency.
+DEFAULT_RABBITMQ_COALESCE_WINDOW_MS: Final[int] = 5
+# Upper bound on rows per merged message (~1.8 KB each, so ~180 KB at most).
+DEFAULT_RABBITMQ_COALESCE_MAX_ROWS: Final[int] = 100
+# Insert failures that are not outages and that the worker cannot pin on rows in
+# the same flush (an unexplained error, or bad rows with no successful insert
+# beside them) are retried this many times per message; the last attempt parks
+# the message in the failed queue if any other insert succeeded meanwhile.
+# With the default retry delay the worker backs off 1, 2, 4 ... 60 s between
+# attempts, so ten attempts span about five minutes. 0 retries forever.
+DEFAULT_RABBITMQ_MAX_INSERT_ATTEMPTS: Final[int] = 10
 DEFAULT_RABBITMQ_CONNECT_TIMEOUT_SECONDS: Final[int] = 5
 DEFAULT_RABBITMQ_STARTUP_TIMEOUT_SECONDS: Final[int] = 60
 DEFAULT_RABBITMQ_STARTUP_RETRY_INTERVAL_MS: Final[int] = 1000

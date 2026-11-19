@@ -14,11 +14,16 @@ from evnt import __version__
 from evnt.api import encrypted, health, proxy, tracker
 from evnt.config import Settings, settings
 from evnt.constants import APP_NAME
+from evnt.exceptions import IngestUnavailableError
 from evnt.lifespan import lifespan
 from evnt.middleware.access_log import PathSkippingAccessLogMiddleware
 from evnt.middleware.body_limit import BodySizeLimitMiddleware
 from evnt.middleware.security import SecurityHeadersMiddleware
-from evnt.observability.logging import init_logging, validation_exception_handler
+from evnt.observability.logging import (
+    ingest_unavailable_handler,
+    init_logging,
+    validation_exception_handler,
+)
 from evnt.static import DeferredStaticFiles
 
 
@@ -178,6 +183,7 @@ def create_app() -> FastAPI:
     )
     _add_conditional_middleware(app, config)
     app.add_exception_handler(RequestValidationError, validation_exception_handler)
+    app.add_exception_handler(IngestUnavailableError, ingest_unavailable_handler)
     _add_routes(app, config)
     _add_integrations(app, config)
     return app

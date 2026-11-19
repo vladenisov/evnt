@@ -3,7 +3,8 @@ from clickhouse_connect.driver.exceptions import DataError
 
 from evnt.config import RabbitMQConfig
 from evnt.ingest import rabbitmq as rabbitmq_module
-from evnt.ingest.rabbitmq import QueuedInsertPayload, RabbitMQBatchWorker
+from evnt.ingest.rabbitmq import QueuedInsertPayload
+from evnt.ingest.worker import RabbitMQBatchWorker
 
 
 def test_failed_queue_name_must_differ_from_main_queue():
@@ -206,3 +207,54 @@ async def test_retry_rabbitmq_startup_waits_until_connection_is_ready(
     assert connection == "connected"
     assert attempts == 3
     assert sleep_calls == [0.25, 0.25]
+
+
+class _RowCheckingSink(_BatchSink):
+    """Rejects any insert that contains a row whose id is in ``bad_ids``."""
+
+    def __init__(self, bad_ids, *, fail_transient_after=None):
+        super().__init__()
+        self.bad_ids = set(bad_ids)
+        self.attempts = 0
+        self.fail_transient_after = fail_transient_after
+
+    async def insert_batch(self, rows, table_group="evnt"):
+        self.attempts += 1
+        if self.fail_transient_after is not None and self.attempts > self.fail_transient_after:
+            raise OSError("clickhouse went away")
+        if any(row.get("id") in self.bad_ids for row in rows):
+            raise DataError("invalid row")
+        self.batch_calls.append((table_group, rows))
+
+
+@pytest.mark.anyio
+async def test_worker_parks_only_the_bad_rows_of_a_merged_message(anyio_backend):
+    sink = _RowCheckingSink(bad_ids={3, 6})
+    worker = _worker(sink, batch_size=100)
+    message = _FakeMessage(QueuedInsertPayload(rows=[{"id": i} for i in range(1, 9)]))
+
+    await worker.add_message(message)
+    await worker.flush_all()
+
+    inserted = sorted(row["id"] for _, rows in sink.batch_calls for row in rows)
+    assert inserted == [1, 2, 4, 5, 7, 8]
+    assert message.acked is True
+    published = worker.channel.default_exchange.published
+    assert len(published) == 1
+    assert published[0]["routing_key"] == "evnt.ingest.failed"
+    parked = QueuedInsertPayload.model_validate_json(published[0]["message"].body)
+    assert [row["id"] for row in parked.rows] == [3, 6]
+
+
+@pytest.mark.anyio
+async def test_worker_requeues_a_message_when_isolation_hits_a_transient_error(anyio_backend):
+    sink = _RowCheckingSink(bad_ids={2}, fail_transient_after=2)
+    worker = _worker(sink, batch_size=100)
+    message = _FakeMessage(QueuedInsertPayload(rows=[{"id": i} for i in range(1, 5)]))
+
+    await worker.add_message(message)
+    await worker.flush_all()
+
+    assert message.nacked is True
+    assert message.acked is False
+    assert worker.channel.default_exchange.published == []

@@ -1,10 +1,11 @@
 """Application startup and shutdown.
 
 Startup resolves the encryption keyring, connects the active ingest backend
-(ClickHouse directly, or RabbitMQ), builds the proxy HTTP client and warms the
-Iglu validator cache. Every resource that needs closing registers its close
-call on an ``AsyncExitStack``, which runs them in reverse order on shutdown, or
-as soon as a later startup step fails.
+(ClickHouse directly, or RabbitMQ), builds the proxy HTTP client, warms the
+Iglu validator cache and initialises the user-agent parser. Every resource
+that needs closing registers its close call on an ``AsyncExitStack``, which
+runs them in reverse order on shutdown, or as soon as a later startup step
+fails.
 """
 
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -23,6 +24,7 @@ from evnt.health import CachedHealthChecker, ClickHouseHealthChecker
 from evnt.protocols import HealthChecker
 from evnt.storage.clickhouse import client as clickhouse
 from evnt.tracker.iglu import warm_iglu_schema_cache
+from evnt.tracker.useragent import warm_user_agent_parser
 
 logger = structlog.get_logger(__name__)
 
@@ -76,6 +78,10 @@ async def _configure_direct_ingest(app: FastAPI, stack: AsyncExitStack) -> None:
 async def _configure_rabbitmq_ingest(app: FastAPI, stack: AsyncExitStack) -> None:
     """Publish events to RabbitMQ; ``evnt queue worker`` writes them to ClickHouse."""
     from evnt.ingest import RabbitMQHealthChecker, RabbitMQPublisher  # noqa: PLC0415
+    from evnt.ingest.rabbitmq import (  # noqa: PLC0415
+        connect_rabbitmq,
+        retry_rabbitmq_startup,
+    )
 
     rabbitmq_config = settings.ingest.rabbitmq
     tables_config = settings.clickhouse.configuration
@@ -88,13 +94,21 @@ async def _configure_rabbitmq_ingest(app: FastAPI, stack: AsyncExitStack) -> Non
     )
     _close_on_exit(stack, "rabbitmq", publisher.close)
     app.state.connector = publisher
-    app.state.health_checker = _cache_health_checker(
-        RabbitMQHealthChecker(
-            publisher.channel,
-            rabbitmq_config.queue_name,
-            rabbitmq_config.resolved_failed_queue_name,
-        ),
+    # A connection of its own: see RabbitMQHealthChecker for why it must not
+    # share the publisher's.
+    check_connection = await retry_rabbitmq_startup(
+        rabbitmq_config,
+        "health_check_connect",
+        lambda: connect_rabbitmq(rabbitmq_config),
     )
+    checker = RabbitMQHealthChecker(
+        check_connection,
+        rabbitmq_config.queue_name,
+        rabbitmq_config.resolved_failed_queue_name,
+        timeout_seconds=rabbitmq_config.connect_timeout_seconds,
+    )
+    _close_on_exit(stack, "rabbitmq_health_check", checker.close)
+    app.state.health_checker = _cache_health_checker(checker)
 
 
 def _configure_proxy_http_client(app: FastAPI, stack: AsyncExitStack) -> None:
@@ -165,6 +179,19 @@ def warm_known_iglu_schemas() -> None:
     )
 
 
+async def _warm_user_agent_parser() -> None:
+    """Initialise the user-agent parser before the first request needs it.
+
+    Only a latency optimisation: on failure the parser initialises on the
+    first request instead, so the error is logged and startup carries on.
+    """
+    try:
+        # About 100 ms of regex compilation: keep it off the event loop.
+        await run_cpu_task(warm_user_agent_parser)
+    except Exception as exc:
+        logger.warning("Failed to warm user-agent parser", error=str(exc))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Open the ingest backend for the lifetime of the app.
@@ -200,6 +227,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ) from exc
 
         logger.info("Ingest backend initialized")
+        await _warm_user_agent_parser()
         try:
             yield
         finally:

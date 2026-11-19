@@ -1,40 +1,53 @@
-"""RabbitMQ-backed ingest pipeline."""
+"""RabbitMQ ingest: the publisher and the shared connection helpers.
+
+Holds ``RabbitMQPublisher``, the queued-insert payload format, and the
+connect/startup-retry helpers the publisher and the batch worker share. The
+worker lives in ``evnt.ingest.worker``; insert-failure classification lives in
+``evnt.ingest.insert_failures``.
+"""
 
 from __future__ import annotations
 
 import asyncio
-import os
+import math
 import time
-from collections import defaultdict
 from collections.abc import Awaitable, Callable
-from contextlib import suppress
-from dataclasses import dataclass
 from typing import Any
 
 import structlog
 from aio_pika import DeliveryMode, Message, connect_robust
 from aio_pika.abc import (
     AbstractChannel,
-    AbstractIncomingMessage,
-    AbstractQueue,
     AbstractRobustConnection,
 )
-from aio_pika.exceptions import AuthenticationError, ProbableAuthenticationError
-from clickhouse_connect.driver.exceptions import DataError
+from aio_pika.exceptions import (
+    AMQPError,
+    AuthenticationError,
+    ChannelInvalidStateError,
+    ProbableAuthenticationError,
+)
 from pydantic import BaseModel, Field
 
 from evnt.config import RabbitMQConfig
-from evnt.constants import (
-    WORKER_HEARTBEAT_SECONDS,
-    WORKER_LIVENESS_PATH,
-    WORKER_STALL_GRACE_SECONDS,
-)
-from evnt.protocols import RowSink
+from evnt.exceptions import IngestUnavailableError
+from evnt.ingest.coalesce import RowCoalescer
 
 logger = structlog.get_logger(__name__)
 
 # Milliseconds per second — used when converting ms config values to seconds.
 _MS_PER_SECOND = 1000
+# During a broker alarm every request fails the same way; one line per interval
+# (with a count of the rest) is enough to see it.
+_UNAVAILABLE_LOG_INTERVAL_SECONDS = 10.0
+# Publish failures that mean "the broker did not store it, retry later": no
+# confirm in time, a closed channel or connection (AMQPError covers the
+# connection errors, nacks and unroutable returns), or a socket error.
+_PUBLISH_UNAVAILABLE_ERRORS = (
+    TimeoutError,
+    AMQPError,
+    ChannelInvalidStateError,
+    ConnectionError,
+)
 
 # Assigned to a name so ruff-format (PEP 758 preview) does not rewrite the
 # `except (A, B):` literal into the bare `except A, B:` form.
@@ -87,12 +100,24 @@ def _encode_queued_insert_payload(
     return payload.model_dump_json().encode("utf-8")
 
 
-@dataclass(slots=True)
-class PendingMessage:
-    """Pending RabbitMQ message awaiting a batch flush."""
+class _RateLimitedLog:
+    """Lets one log line through per interval and counts the ones it held back."""
 
-    message: AbstractIncomingMessage
-    payload: QueuedInsertPayload
+    def __init__(self, interval_seconds: float) -> None:
+        self.interval_seconds = interval_seconds
+        self._next_at = 0.0
+        self._suppressed = 0
+
+    def take(self) -> int | None:
+        """Return how many were suppressed if this one may log, else ``None``."""
+
+        now = time.monotonic()
+        if now < self._next_at:
+            self._suppressed += 1
+            return None
+        self._next_at = now + self.interval_seconds
+        suppressed, self._suppressed = self._suppressed, 0
+        return suppressed
 
 
 async def connect_rabbitmq(config: RabbitMQConfig) -> AbstractRobustConnection:
@@ -174,6 +199,16 @@ class RabbitMQPublisher:
         self.tables = tables
         self.database = database
         self.cluster_name = cluster_name
+        # Bounds unconfirmed publishes, so a broker that stops confirming holds at
+        # most this many request bodies instead of every request that arrives.
+        self._inflight = asyncio.Semaphore(config.max_inflight_publishes)
+        self._retry_after_seconds = max(1, math.ceil(config.publish_timeout_seconds))
+        self._unavailable_log = _RateLimitedLog(_UNAVAILABLE_LOG_INTERVAL_SECONDS)
+        self._coalescer = RowCoalescer(
+            self._publish_rows,
+            window_seconds=config.coalesce_window_ms / _MS_PER_SECOND,
+            max_rows=config.coalesce_max_rows,
+        )
 
     @classmethod
     async def create(
@@ -188,7 +223,13 @@ class RabbitMQPublisher:
         async def _create() -> RabbitMQPublisher:
             connection = await connect_rabbitmq(config)
             try:
-                channel = await connection.channel(publisher_confirms=True)
+                # on_return_raises: a mandatory publish the broker cannot route
+                # (the queue was deleted) fails instead of confirming normally,
+                # so the request is retried rather than answered 204 and lost.
+                channel = await connection.channel(
+                    publisher_confirms=True,
+                    on_return_raises=True,
+                )
                 await _declare_ingest_queues(channel, config)
             except Exception:
                 await connection.close()
@@ -203,11 +244,20 @@ class RabbitMQPublisher:
         rows: list[dict[str, Any]],
         table_group: str = "evnt",
     ) -> None:
-        """Publish rows to RabbitMQ as a persistent message."""
+        """Queue rows in RabbitMQ, returning once the broker confirmed them.
+
+        Rows from requests arriving within ``coalesce_window_ms`` of each other
+        travel in one persistent message (see ``RowCoalescer``).
+        """
 
         if not rows:
             logger.debug("No rows to enqueue", table_group=table_group)
             return
+
+        await self._coalescer.add(table_group, rows)
+
+    async def _publish_rows(self, table_group: str, rows: list[dict[str, Any]]) -> None:
+        """Publish one message holding ``rows`` and wait for its confirm."""
 
         body = _encode_queued_insert_payload(table_group, rows)
         message = Message(
@@ -217,11 +267,37 @@ class RabbitMQPublisher:
             type="evnt.insert",
         )
 
-        await self.channel.default_exchange.publish(
-            message,
-            routing_key=self.config.queue_name,
-            mandatory=True,
-        )
+        # One deadline covers waiting for a window slot and the confirm. Under a
+        # broker memory or disk alarm confirms stop entirely; the request then fails
+        # fast with a 503 the tracker retries, instead of waiting out the alarm. A
+        # closed channel or connection (broker restart, reconnect in progress), a
+        # nack and an unroutable return are the same "not stored, retry later". A
+        # publish cut off after it was written may still be stored, so a retry can
+        # duplicate it; events carry ``eid`` for deduplication.
+        try:
+            async with asyncio.timeout(self.config.publish_timeout_seconds):
+                async with self._inflight:
+                    await self.channel.default_exchange.publish(
+                        message,
+                        routing_key=self.config.queue_name,
+                        mandatory=True,
+                    )
+        except _PUBLISH_UNAVAILABLE_ERRORS as exc:
+            suppressed = self._unavailable_log.take()
+            if suppressed is not None:
+                logger.warning(
+                    "RabbitMQ did not take the publish; answering 503",
+                    error=repr(exc),
+                    queue_name=self.config.queue_name,
+                    publish_timeout_seconds=self.config.publish_timeout_seconds,
+                    max_inflight_publishes=self.config.max_inflight_publishes,
+                    suppressed_since_last_log=suppressed,
+                )
+            raise IngestUnavailableError(
+                "RabbitMQ did not take the publish",
+                {"queue_name": self.config.queue_name},
+                retry_after_seconds=self._retry_after_seconds,
+            ) from exc
         logger.debug(
             "Queued rows for ingestion",
             table_group=table_group,
@@ -235,435 +311,8 @@ class RabbitMQPublisher:
         return _resolve_table_name(self.tables, self.cluster_name, table_group)
 
     async def close(self) -> None:
-        """Close RabbitMQ resources."""
+        """Publish what is still buffered, then close RabbitMQ resources."""
 
-        await self.channel.close()
-        await self.connection.close()
-
-
-class RabbitMQHealthChecker:
-    """Health checker for RabbitMQ-backed ingest."""
-
-    def __init__(self, channel: AbstractChannel, *queue_names: str) -> None:
-        self.channel = channel
-        self.queue_names = queue_names
-
-    async def check(self) -> dict[str, bool]:
-        """Check that the queue is reachable."""
-
-        healthy = True
-        try:
-            for queue_name in self.queue_names:
-                await self.channel.declare_queue(
-                    queue_name,
-                    durable=True,
-                    passive=True,
-                )
-        except Exception as exc:
-            logger.warning(
-                "RabbitMQ health check failed",
-                error=str(exc),
-                queue_names=self.queue_names,
-            )
-            healthy = False
-
-        return {"rabbitmq": healthy}
-
-
-class RabbitMQBatchWorker:
-    """Consumes RabbitMQ messages and writes batched rows to ClickHouse."""
-
-    # Cap exponential backoff so the consumer never stalls indefinitely
-    # between iterations when ClickHouse is persistently unavailable.
-    MAX_BACKOFF_SECONDS = 60.0
-
-    def __init__(
-        self,
-        connection: AbstractRobustConnection,
-        channel: AbstractChannel,
-        queue: AbstractQueue,
-        sink: RowSink,
-        config: RabbitMQConfig,
-    ) -> None:
-        self.connection = connection
-        self.channel = channel
-        self.queue = queue
-        self.sink = sink
-        self.config = config
-        self.failed_queue_name = config.resolved_failed_queue_name
-        self.flush_interval = config.batch_timeout_ms / _MS_PER_SECOND
-        self.retry_delay = config.retry_delay_ms / _MS_PER_SECOND
-        self.insert_timeout = config.insert_timeout_seconds
-        # A step longer than this means the loop is stuck on an await that
-        # never returns (ack/nack/publish have no timeout of their own).
-        self.stall_threshold = self.insert_timeout + WORKER_STALL_GRACE_SECONDS
-        self.pending_batches: dict[str, list[PendingMessage]] = defaultdict(list)
-        self.pending_row_counts: dict[str, int] = defaultdict(int)
-        # Per-table-group consecutive insert-failure counts, used to drive a
-        # capped exponential backoff applied in ``run`` BETWEEN retry attempts
-        # (never while holding/awaiting an in-flight message).
-        self.failure_counts: dict[str, int] = defaultdict(int)
-        self._backoff_applied_counts: dict[str, int] = {}
-        # Monotonic start of the batch-loop step in progress, ``None`` while the
-        # loop is idle (waiting for messages or backing off).
-        self._busy_since: float | None = None
-
-    @classmethod
-    async def create(
-        cls,
-        sink: RowSink,
-        config: RabbitMQConfig,
-    ) -> RabbitMQBatchWorker:
-        """Create a worker bound to the configured queue."""
-
-        async def _create() -> RabbitMQBatchWorker:
-            connection = await connect_rabbitmq(config)
-            try:
-                channel = await connection.channel(publisher_confirms=True)
-                await channel.set_qos(prefetch_count=config.prefetch_count)
-                await _declare_ingest_queues(channel, config)
-                queue = await channel.declare_queue(config.queue_name, durable=True)
-            except Exception:
-                await connection.close()
-                raise
-
-            return cls(connection, channel, queue, sink, config)
-
-        return await retry_rabbitmq_startup(config, "worker_create", _create)
-
-    async def run(self) -> None:
-        """Start consuming and flushing batches."""
-
-        logger.info(
-            "Starting RabbitMQ batch worker",
-            queue_name=self.config.queue_name,
-            batch_size=self.config.batch_size,
-            batch_timeout_ms=self.config.batch_timeout_ms,
-        )
-
-        iterator = self.queue.iterator()
-        next_message_task: asyncio.Task[AbstractIncomingMessage] | None = None
-        heartbeat_task = asyncio.create_task(self._heartbeat_loop())
-        try:
-            async with iterator:
-                while True:
-                    self._busy_since = None
-                    # Apply any pending capped exponential backoff BEFORE
-                    # fetching the next message so failing inserts do not stall
-                    # the consumer mid-flush (which would hold prefetch and
-                    # block ack/nack of already-received messages).
-                    await self._apply_backoff()
-
-                    if next_message_task is None:
-                        next_message_task = asyncio.create_task(iterator.__anext__())
-                    try:
-                        message = await asyncio.wait_for(
-                            asyncio.shield(next_message_task),
-                            timeout=self.flush_interval,
-                        )
-                    except TimeoutError:
-                        self._busy_since = time.monotonic()
-                        await self.flush_all()
-                        continue
-                    except StopAsyncIteration as exc:
-                        logger.error(
-                            "RabbitMQ queue iterator stopped unexpectedly",
-                            queue_name=self.config.queue_name,
-                        )
-                        raise RuntimeError(
-                            "RabbitMQ queue iterator stopped unexpectedly",
-                        ) from exc
-
-                    next_message_task = None
-                    self._busy_since = time.monotonic()
-                    await self.add_message(message)
-        finally:
-            heartbeat_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await heartbeat_task
-            if next_message_task is not None and not next_message_task.done():
-                next_message_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await next_message_task
-            await self.flush_all()
-
-    def _backoff_seconds(self) -> float:
-        """Return the current backoff delay derived from failure counts.
-
-        Uses the worst (highest) consecutive-failure count across all table
-        groups so a single persistently failing destination throttles the
-        loop. Returns ``0`` when there have been no recent failures.
-        """
-
-        max_failures = max(self.failure_counts.values(), default=0)
-        if max_failures <= 0:
-            return 0.0
-        # base * 2**(n-1), capped, so the first failure waits ``retry_delay``.
-        delay: float = self.retry_delay * 2.0 ** (max_failures - 1)
-        return min(delay, self.MAX_BACKOFF_SECONDS)
-
-    def _pending_backoff_seconds(self) -> float:
-        """Return delay for failures that have not already backed off."""
-
-        unapplied_failures = (
-            failure_count
-            for table_group, failure_count in self.failure_counts.items()
-            if failure_count > self._backoff_applied_counts.get(table_group, 0)
-        )
-        max_failures = max(unapplied_failures, default=0)
-        if max_failures <= 0:
-            return 0.0
-        delay: float = self.retry_delay * 2.0 ** (max_failures - 1)
-        return min(delay, self.MAX_BACKOFF_SECONDS)
-
-    async def _apply_backoff(self) -> None:
-        """Sleep once for each newly observed capped backoff level."""
-
-        delay = self._pending_backoff_seconds()
-        if delay <= 0:
-            return
-        logger.warning(
-            "Backing off before next RabbitMQ batch iteration",
-            backoff_seconds=delay,
-            failure_counts=dict(self.failure_counts),
-        )
-        await asyncio.sleep(delay)
-        # Refresh liveness right after a long backoff so a sustained backend
-        # outage cannot make the healthcheck see a stale file and trigger a
-        # spurious restart while the worker is healthy and retrying.
-        self._mark_alive()
-        self._backoff_applied_counts = dict(self.failure_counts)
-
-    def _mark_alive(self) -> None:
-        """Atomically record worker liveness without exposing a partial file."""
-
-        temporary_path = WORKER_LIVENESS_PATH.with_name(
-            f".{WORKER_LIVENESS_PATH.name}.{os.getpid()}.tmp",
-        )
-        try:
-            temporary_path.write_text(str(time.time()))
-            os.replace(temporary_path, WORKER_LIVENESS_PATH)
-        except OSError as exc:
-            with suppress(OSError):
-                temporary_path.unlink()
-            logger.warning(
-                "Failed to write worker liveness file",
-                error=str(exc),
-                path=str(WORKER_LIVENESS_PATH),
-            )
-
-    def _busy_seconds(self) -> float:
-        """Return how long the current batch-loop step has been running."""
-
-        if self._busy_since is None:
-            return 0.0
-        return time.monotonic() - self._busy_since
-
-    async def _heartbeat_loop(self) -> None:
-        """Refresh the liveness file on a fixed cadence while the loop progresses.
-
-        Runs as a background task for the worker's lifetime so liveness is
-        decoupled from message flow, the batch-flush timeout, and backoff. This
-        keeps an idle worker (or one configured with a large batch timeout) from
-        being mistaken for dead by ``queue healthcheck``. Liveness is withheld
-        while a single step runs past ``stall_threshold`` so a loop stuck on a
-        hung await goes stale and gets restarted.
-        """
-
-        while True:
-            busy_seconds = self._busy_seconds()
-            if busy_seconds <= self.stall_threshold:
-                self._mark_alive()
-            else:
-                logger.error(
-                    "RabbitMQ batch worker loop stalled, withholding liveness",
-                    busy_seconds=round(busy_seconds, 1),
-                    stall_threshold_seconds=self.stall_threshold,
-                )
-            await asyncio.sleep(WORKER_HEARTBEAT_SECONDS)
-
-    async def add_message(self, message: AbstractIncomingMessage) -> None:
-        """Decode and buffer a message."""
-
-        try:
-            payload = QueuedInsertPayload.model_validate_json(message.body)
-        except Exception as exc:
-            logger.error("Dropping invalid queue payload", error=str(exc))
-            await message.reject(requeue=False)
-            return
-
-        if not payload.rows:
-            await message.ack()
-            return
-
-        self.pending_batches[payload.table_group].append(
-            PendingMessage(message=message, payload=payload),
-        )
-        self.pending_row_counts[payload.table_group] += len(payload.rows)
-
-        if self.pending_row_counts[payload.table_group] >= self.config.batch_size:
-            await self.flush_table_group(payload.table_group)
-
-    async def flush_all(self) -> None:
-        """Flush all pending batches."""
-
-        for table_group in list(self.pending_batches):
-            await self.flush_table_group(table_group)
-
-    async def _insert_rows(
-        self,
-        rows: list[dict[str, Any]],
-        table_group: str,
-    ) -> None:
-        try:
-            insert_batch = getattr(self.sink, "insert_batch", None)
-            if callable(insert_batch):
-                await insert_batch(rows, table_group=table_group)
-                return
-            await self.sink.insert_rows(rows, table_group=table_group)
-        finally:
-            # Each insert attempt is bounded by ``insert_timeout``; restart the
-            # step clock so a long data-error split is not read as a stall.
-            self._busy_since = time.monotonic()
-
-    async def _publish_failed_message(
-        self,
-        item: PendingMessage,
-        table_group: str,
-        error: Exception,
-    ) -> None:
-        """Move an isolated invalid message out of the main ingest queue."""
-
-        headers = dict(getattr(item.message, "headers", {}) or {})
-        headers["x-evnt-source-queue"] = self.config.queue_name
-        headers["x-evnt-error"] = str(error)
-        headers["x-evnt-table-group"] = table_group
-
-        await self.channel.default_exchange.publish(
-            Message(
-                body=item.message.body,
-                headers=headers,
-                content_type=getattr(item.message, "content_type", None) or "application/json",
-                delivery_mode=DeliveryMode.PERSISTENT,
-                type=getattr(item.message, "type", None) or "evnt.insert.failed",
-            ),
-            routing_key=self.failed_queue_name,
-            mandatory=True,
-        )
-
-    async def _flush_pending_messages(
-        self,
-        table_group: str,
-        pending: list[PendingMessage],
-    ) -> bool:
-        """Flush a set of pending messages.
-
-        Returns ``True`` when the messages made progress off the main queue
-        (inserted or routed to the failed queue) and ``False`` when a transient
-        failure caused them to be nack'd/requeued. Backoff (applied between run
-        iterations) is driven by this result so the consumer is never stalled
-        mid-flush while holding prefetch or before ack/nack of in-flight
-        messages.
-        """
-
-        if not pending:
-            return True
-
-        rows = [row for item in pending for row in item.payload.rows]
-        rows_count = len(rows)
-        try:
-            async with asyncio.timeout(self.insert_timeout):
-                await self._insert_rows(rows, table_group)
-        except DataError as exc:
-            if len(pending) == 1:
-                logger.warning(
-                    "Isolated queue message failed ClickHouse validation, moving to failed queue",
-                    error=str(exc),
-                    table_group=table_group,
-                    rows_count=rows_count,
-                    messages_count=1,
-                    failed_queue_name=self.failed_queue_name,
-                )
-                try:
-                    await self._publish_failed_message(pending[0], table_group, exc)
-                except Exception as publish_exc:
-                    logger.error(
-                        "Failed to move invalid queue message to failed queue, requeueing",
-                        error=str(publish_exc),
-                        table_group=table_group,
-                        rows_count=rows_count,
-                        messages_count=1,
-                        failed_queue_name=self.failed_queue_name,
-                    )
-                    await pending[0].message.nack(requeue=True)
-                    return False
-                await pending[0].message.ack()
-                return True
-
-            midpoint = max(1, len(pending) // 2)
-            logger.warning(
-                "Batch insert failed with ClickHouse data error, splitting batch",
-                error=str(exc),
-                table_group=table_group,
-                rows_count=rows_count,
-                messages_count=len(pending),
-            )
-            first = await self._flush_pending_messages(table_group, pending[:midpoint])
-            second = await self._flush_pending_messages(table_group, pending[midpoint:])
-            return first and second
-        except Exception as exc:
-            if isinstance(exc, TimeoutError):
-                logger.error(
-                    "Batch insert timed out, requeueing messages",
-                    table_group=table_group,
-                    rows_count=rows_count,
-                    messages_count=len(pending),
-                    insert_timeout_seconds=self.insert_timeout,
-                )
-            else:
-                logger.error(
-                    "Batch insert failed, requeueing messages",
-                    error=str(exc),
-                    table_group=table_group,
-                    rows_count=rows_count,
-                    messages_count=len(pending),
-                )
-            for item in pending:
-                await item.message.nack(requeue=True)
-            return False
-
-        for item in pending:
-            await item.message.ack()
-
-        logger.debug(
-            "Flushed queued rows",
-            table_group=table_group,
-            rows_count=rows_count,
-            messages_count=len(pending),
-        )
-        return True
-
-    async def flush_table_group(self, table_group: str) -> None:
-        """Flush a single table group and ack or requeue source messages.
-
-        Updates the per-table-group consecutive-failure count that drives the
-        capped exponential backoff applied between run-loop iterations: the
-        count is reset on success and incremented on a transient failure.
-        """
-
-        pending = self.pending_batches.pop(table_group, [])
-        self.pending_row_counts.pop(table_group, 0)
-        if not pending:
-            return
-        succeeded = await self._flush_pending_messages(table_group, pending)
-        if succeeded:
-            self.failure_counts.pop(table_group, None)
-            self._backoff_applied_counts.pop(table_group, None)
-        else:
-            self.failure_counts[table_group] += 1
-
-    async def close(self) -> None:
-        """Close RabbitMQ resources."""
-
+        await self._coalescer.close()
         await self.channel.close()
         await self.connection.close()
