@@ -145,12 +145,15 @@ def test_country_header_accepts_only_country_codes(monkeypatch, connector, count
         pytest.param(b" de ", "DE", id="ascii-control"),
     ],
 )
-def test_country_header_rejects_non_ascii_before_uppercasing(monkeypatch, raw_value, expected):
+@pytest.mark.anyio
+async def test_country_header_rejects_non_ascii_before_uppercasing(
+    monkeypatch, raw_value, expected, anyio_backend
+):
     # TestClient re-encodes non-ASCII header bytes as UTF-8, so build the ASGI
     # scope directly to reproduce the raw byte a real server passes through.
     _configure(monkeypatch)
     request = Request({"type": "http", "headers": [(b"cf-ipcountry", raw_value)]})
-    assert get_client_country(request) == expected
+    assert await get_client_country(request) == expected
 
 
 @pytest.mark.parametrize("country_header", [None, "CF-IPCountry"])

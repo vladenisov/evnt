@@ -63,7 +63,7 @@ def test_parse_agent_caches_repeated_user_agents(monkeypatch):
     assert second.os_version_string == "6.0"
 
 
-def test_parse_agent_for_insert_reuses_cached_instance(monkeypatch):
+def test_parse_agent_for_insert_parses_once_and_returns_independent_models(monkeypatch):
     user_agent = "Mozilla/5.0"
     parse_calls = []
 
@@ -80,16 +80,19 @@ def test_parse_agent_for_insert_reuses_cached_instance(monkeypatch):
 
     useragent_module.clear_user_agent_cache()
     first = useragent_module.parse_agent_for_insert(user_agent)
+    first.browser_version.append("mutated")
+    first.device_extra["family"] = "mutated"
     second = useragent_module.parse_agent_for_insert(user_agent)
     useragent_module.clear_user_agent_cache()
 
     assert parse_calls == [user_agent]
-    assert first is second
+    assert first is not second
+    assert second.browser_version == ["123", "0", "1"]
     assert second.device_extra == {"family": "Desktop"}
 
 
 @pytest.mark.anyio
-async def test_parse_agent_for_insert_async_offloads_only_cache_miss(
+async def test_agent_fields_for_insert_async_offloads_only_cache_miss(
     monkeypatch,
 ):
     user_agent = "Mozilla/5.0"
@@ -108,13 +111,14 @@ async def test_parse_agent_for_insert_async_offloads_only_cache_miss(
     )
 
     useragent_module.clear_user_agent_cache()
-    first = await useragent_module.parse_agent_for_insert_async(user_agent)
-    second = await useragent_module.parse_agent_for_insert_async(user_agent)
+    first = await useragent_module.agent_fields_for_insert_async(user_agent)
+    second = await useragent_module.agent_fields_for_insert_async(user_agent)
     useragent_module.clear_user_agent_cache()
 
-    assert first is second
+    assert first == second
+    assert first is not second
     assert thread_calls == [
-        (useragent_module._parse_agent_cached, (user_agent,)),
+        (useragent_module._parse_record_cached, (user_agent,)),
     ]
 
 
@@ -136,9 +140,12 @@ def test_user_agent_cache_evicts_least_recently_used_entry(monkeypatch):
     useragent_module.clear_user_agent_cache()
     useragent_module.parse_agent_for_insert("ua-1")
     useragent_module.parse_agent_for_insert("ua-2")
+    # A hit moves ua-1 to the most-recent end, so ua-3 evicts ua-2.
     useragent_module.parse_agent_for_insert("ua-1")
     useragent_module.parse_agent_for_insert("ua-3")
+    assert list(useragent_module._user_agent_cache) == ["ua-1", "ua-3"]
     useragent_module.parse_agent_for_insert("ua-2")
+    assert list(useragent_module._user_agent_cache) == ["ua-3", "ua-2"]
     useragent_module.clear_user_agent_cache()
 
     assert parse_calls == ["ua-1", "ua-2", "ua-3", "ua-2"]
@@ -160,11 +167,15 @@ def test_user_agent_cache_can_be_disabled(monkeypatch):
     )
 
     useragent_module.clear_user_agent_cache()
-    useragent_module.parse_agent_for_insert("Mozilla/5.0")
-    useragent_module.parse_agent_for_insert("Mozilla/5.0")
+    first = useragent_module.parse_agent_for_insert("Mozilla/5.0")
+    second = useragent_module.parse_agent_for_insert("Mozilla/5.0")
+    cached = dict(useragent_module._user_agent_cache)
     useragent_module.clear_user_agent_cache()
 
     assert parse_calls == ["Mozilla/5.0", "Mozilla/5.0"]
+    assert cached == {}
+    assert first == second
+    assert first.browser_version_string == "123.0.1"
 
 
 def test_parse_agent_handles_missing_header_without_parser(monkeypatch):

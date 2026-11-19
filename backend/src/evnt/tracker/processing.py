@@ -2,6 +2,7 @@
 Core data processing handlers for Snowplow events.
 """
 
+import asyncio
 from ipaddress import IPv4Address, IPv6Address
 from typing import Any
 
@@ -14,9 +15,12 @@ from evnt.tracker.models import (
     PayloadModel,
 )
 from evnt.tracker.payload import dump_insert_model, parse_payload
-from evnt.tracker.useragent import parse_agent_for_insert_async
+from evnt.tracker.useragent import agent_fields_for_insert_async
 
 logger = structlog.get_logger(__name__)
+
+# Events processed between yields to the event loop (about 10-20 ms of work).
+_EVENTS_PER_YIELD = 64
 
 
 @async_capture_span()
@@ -49,14 +53,19 @@ async def process_data(
     """
     client_ip = extract_ip_from_header(user_ip) if isinstance(user_ip, str) else user_ip
     user_ip = convert_ip(client_ip)
-    ua_data = await parse_agent_for_insert_async(user_agent)
+    ua_data = await agent_fields_for_insert_async(user_agent)
 
     # Extract payload data
     data = body.data if isinstance(body, PayloadModel) else [body]
 
     # Process each payload element
     result = []
-    for item in data:
+    for index, item in enumerate(data):
+        # parse_payload never really suspends, so without this a large batch
+        # holds the event loop for its whole run (about 1 s for 5000 events)
+        # and every other request waits behind it.
+        if index and index % _EVENTS_PER_YIELD == 0:
+            await asyncio.sleep(0)
         payload_data = await parse_payload(item, ua_data, user_ip, cookies)
 
         item_data = dump_insert_model(payload_data)

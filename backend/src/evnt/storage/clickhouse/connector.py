@@ -23,6 +23,60 @@ logger = structlog.get_logger(__name__)
 _ZERO_UUID = UUID(int=0)
 
 
+# How a payload value is coerced for its column (see _sanitize_clickhouse_value).
+_KIND_RAW = 0
+_KIND_STRING = 1
+_KIND_UUID = 2
+
+# One plan entry per inserted column: (payload_name, kind, None) for a plain
+# column, or ("", 0, ((payload_name, kind), ...)) for a Tuple column.
+_ColumnPlan = tuple[str, int, tuple[tuple[str, int], ...] | None]
+
+
+def _value_kind(type_name: str) -> int:
+    if type_name == "UUID":
+        return _KIND_UUID
+    if type_name == "String" or type_name.startswith("LowCardinality(String"):
+        return _KIND_STRING
+    return _KIND_RAW
+
+
+def _coerce(kind: int, value: Any) -> Any:
+    """``_sanitize_clickhouse_value`` with the type name already classified."""
+
+    if kind == _KIND_STRING:
+        return "" if value is None else value
+    if kind == _KIND_UUID:
+        if value is None or value == "":
+            return _ZERO_UUID
+        if isinstance(value, str):
+            return UUID(value)
+    return value
+
+
+def _build_plan(fields: tuple[ColumnDef | TupleColumnDef, ...]) -> tuple[_ColumnPlan, ...]:
+    """Classify every column once, so each row only reads and coerces values.
+
+    Classifying per cell (``ColumnDef.type_name`` builds the type name string
+    on every call) cost about as much as processing the events themselves.
+    """
+
+    plan: list[_ColumnPlan] = []
+    for field in fields:
+        if isinstance(field, TupleColumnDef):
+            elements = tuple(
+                (element.payload_name, _value_kind(element.type_name))
+                for element in field.elements
+                if element.payload_name is not None
+            )
+            plan.append(("", _KIND_RAW, elements))
+        else:
+            # Only fields with a payload name are in metadata.fields.
+            assert field.payload_name is not None
+            plan.append((field.payload_name, _value_kind(field.type_name), None))
+    return tuple(plan)
+
+
 @dataclass(frozen=True, slots=True)
 class _InsertBatchMetadata:
     """Static ClickHouse insert details for a table group."""
@@ -31,6 +85,7 @@ class _InsertBatchMetadata:
     fields: tuple[ColumnDef | TupleColumnDef, ...]
     column_names: list[str]
     column_types: list[Any]
+    plan: tuple[_ColumnPlan, ...]
 
 
 class ClickHouseConnector:
@@ -172,6 +227,7 @@ class ClickHouseConnector:
             fields=fields,
             column_names=[field.name for field in fields],
             column_types=[field.type for field in fields],
+            plan=_build_plan(fields),
         )
         self._insert_metadata_cache[table_group] = metadata
         return metadata
@@ -216,6 +272,28 @@ class ClickHouseConnector:
             return "" if value is None else value
         return value
 
+    @staticmethod
+    def _rows_to_values(
+        rows: list[dict[str, Any]],
+        plan: tuple[_ColumnPlan, ...],
+    ) -> list[list[Any]]:
+        """Turn row dicts into value lists in column order."""
+
+        data: list[list[Any]] = []
+        for row in rows:
+            get = row.get
+            values: list[Any] = []
+            append = values.append
+            for payload_name, kind, elements in plan:
+                if elements is not None:
+                    append(tuple(_coerce(k, get(name)) for name, k in elements))
+                elif kind == _KIND_RAW:
+                    append(get(payload_name))
+                else:
+                    append(_coerce(kind, get(payload_name)))
+            data.append(values)
+        return data
+
     async def insert_batch(
         self,
         rows: list[dict[str, Any]],
@@ -228,29 +306,7 @@ class ClickHouseConnector:
             return
 
         metadata = await self._get_insert_metadata(table_group)
-        data: list[list[Any]] = []
-
-        for row in rows:
-            values: list[Any] = []
-            for field in metadata.fields:
-                if isinstance(field, TupleColumnDef):
-                    value = tuple(
-                        self._sanitize_clickhouse_value(
-                            v.type_name,
-                            row.get(v.payload_name),
-                        )
-                        for v in field.elements
-                        if v.payload_name is not None
-                    )
-                else:
-                    # Only fields with a payload name are in metadata.fields.
-                    assert field.payload_name is not None
-                    value = self._sanitize_clickhouse_value(
-                        field.type_name,
-                        row.get(field.payload_name),
-                    )
-                values.append(value)
-            data.append(values)
+        data = self._rows_to_values(rows, metadata.plan)
 
         async with async_capture_span("clickhouse_query"):
             try:

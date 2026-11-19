@@ -1,11 +1,21 @@
 """
 User agent parsing functionality.
+
+Parsed agents are cached per process in an LRU keyed on the raw header. Each
+entry holds a compact immutable :class:`_AgentRecord` rather than a
+``UserAgentModel``: a full pydantic instance cost about 2.3 KB per entry,
+roughly 75 MB per worker process with the default 32768-entry cache. A fresh
+``UserAgentModel`` is assembled from the record on every lookup, so callers
+own what they receive and may mutate it.
+
+The ingest path never needs the model: ``payload._build_initial_model`` only
+copies the agent's fields into the row, so ``process_data`` asks for them as a
+plain dict (``agent_fields_for_insert_async``) and skips the model object.
 """
 
 from collections import OrderedDict
-from copy import copy
 from threading import Lock
-from typing import Final
+from typing import Any, Final, NamedTuple
 
 from crawlerdetect import CrawlerDetect
 from ua_parser import parse
@@ -16,19 +26,66 @@ from evnt.observability.tracing import capture_span
 from evnt.tracker.models import UserAgentModel
 
 USER_AGENT_CACHE_SIZE: Final[int] = settings.performance.user_agent_cache_size
-_MUTABLE_USER_AGENT_FIELDS: Final[tuple[str, ...]] = (
-    "browser_version",
-    "browser_extra",
-    "os_version",
-    "device_extra",
+
+# Families, brands, versions and whole records repeat across many distinct
+# user-agent strings, so equal values are shared through this pool. It is
+# cleared once it reaches the limit: header values are client-controlled and
+# must not grow memory without bound, and clearing never changes a result
+# because pooled values are immutable and only ever compared by equality.
+_INTERN_POOL_LIMIT: Final[int] = 16384
+
+# A typical modern browser string, used to pay the parsers' one-time
+# initialisation (regex compilation) at startup instead of on a request.
+WARM_UP_USER_AGENT: Final[str] = (
+    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Mobile Safari/537.36"
 )
+
 crawler_detect = CrawlerDetect()
-_user_agent_cache: OrderedDict[str, UserAgentModel] = OrderedDict()
+
+
+class _AgentRecord(NamedTuple):
+    """The parsed fields of one user agent, without the string itself."""
+
+    browser_family: str
+    browser_version: tuple[str, ...]
+    browser_version_string: str
+    os_family: str
+    os_version: tuple[str, ...]
+    os_version_string: str
+    device_brand: str
+    device_model: str
+    # Empty when the parser reported no device family; ``device_extra`` is
+    # then an empty dict, matching the parser's output exactly.
+    device_family: str
+    device_is_bot: bool
+
+
+_EMPTY_RECORD: Final[_AgentRecord] = _AgentRecord("", (), "", "", (), "", "", "", "", False)
+
+_user_agent_cache: OrderedDict[str, _AgentRecord] = OrderedDict()
 _user_agent_cache_lock = Lock()
+_intern_pool: dict[Any, Any] = {}
+
+_new_object = object.__new__
+_set_attribute = object.__setattr__
+_USER_AGENT_FIELDS: Final[frozenset[str]] = frozenset(UserAgentModel.model_fields)
 
 
-def _join_version(parts: list[str | None]) -> list[str]:
-    return [p for p in parts if p is not None]
+def _intern[T](value: T) -> T:
+    """Return the pooled object equal to ``value``, pooling it if new."""
+
+    pooled = _intern_pool.get(value)
+    if pooled is not None:
+        return pooled  # type: ignore[no-any-return]
+    if len(_intern_pool) >= _INTERN_POOL_LIMIT:
+        _intern_pool.clear()
+    # setdefault keeps the first value when two parser threads race.
+    return _intern_pool.setdefault(value, value)  # type: ignore[no-any-return]
+
+
+def _version(parts: tuple[str | None, ...]) -> tuple[str, ...]:
+    return _intern(tuple(_intern(part) for part in parts if part is not None))
 
 
 def clear_user_agent_cache() -> None:
@@ -36,9 +93,10 @@ def clear_user_agent_cache() -> None:
 
     with _user_agent_cache_lock:
         _user_agent_cache.clear()
+        _intern_pool.clear()
 
 
-def _get_cached_agent(string: str) -> UserAgentModel | None:
+def _get_cached_agent(string: str) -> _AgentRecord | None:
     """Return and refresh an LRU entry without parsing the user agent."""
 
     if USER_AGENT_CACHE_SIZE <= 0:
@@ -51,7 +109,7 @@ def _get_cached_agent(string: str) -> UserAgentModel | None:
         return data
 
 
-def _store_cached_agent(string: str, data: UserAgentModel) -> UserAgentModel:
+def _store_cached_agent(string: str, data: _AgentRecord) -> _AgentRecord:
     """Store one parsed agent and evict the least-recently-used entry."""
 
     # A disabled cache would otherwise pay for the lock and the insert/evict
@@ -60,8 +118,8 @@ def _store_cached_agent(string: str, data: UserAgentModel) -> UserAgentModel:
         return data
 
     with _user_agent_cache_lock:
-        # Concurrent misses may parse the same value in parallel. Preserve the
-        # first cached object so callers still share one immutable hot-path value.
+        # Concurrent misses may parse the same value in parallel; keep the
+        # entry that won so every reader sees one record per string.
         cached = _user_agent_cache.pop(string, None)
         if cached is not None:
             data = cached
@@ -71,98 +129,166 @@ def _store_cached_agent(string: str, data: UserAgentModel) -> UserAgentModel:
         return data
 
 
-def _parse_agent_uncached(string: str) -> UserAgentModel:
-    """Parse a non-null user-agent string without consulting the LRU cache."""
-
-    data = UserAgentModel.model_construct(user_agent=string)
+def _parse_record(string: str) -> _AgentRecord:
+    """Parse a user-agent string into a record without consulting the cache."""
 
     if not string:
-        return data
+        return _EMPTY_RECORD
 
     ua = parse(string)
 
     if ua is None:
-        return data
+        return _EMPTY_RECORD
 
-    data.device_is_bot = crawler_detect.isCrawler(string)
+    is_bot = crawler_detect.isCrawler(string)
 
+    browser_family = ""
+    browser_version: tuple[str, ...] = ()
     browser = ua.user_agent
     if browser is not None:
-        data.browser_family = browser.family or ""
-        data.browser_version = _join_version(
-            [
-                browser.major,
-                browser.minor,
-                browser.patch,
-                browser.patch_minor,
-            ]
+        browser_family = browser.family or ""
+        browser_version = _version(
+            (browser.major, browser.minor, browser.patch, browser.patch_minor)
         )
-        data.browser_version_string = ".".join(data.browser_version)
 
+    os_family = ""
+    os_version: tuple[str, ...] = ()
     os = ua.os
     if os is not None:
-        data.os_family = os.family or ""
-        data.os_version = _join_version(
-            [
-                os.major,
-                os.minor,
-                os.patch,
-                os.patch_minor,
-            ]
-        )
-        data.os_version_string = ".".join(data.os_version)
+        os_family = os.family or ""
+        os_version = _version((os.major, os.minor, os.patch, os.patch_minor))
 
+    device_brand = ""
+    device_model = ""
+    device_family = ""
     device = ua.device
     if device is not None:
-        data.device_brand = device.brand or ""
-        data.device_model = device.model or ""
-        if device.family:
-            data.device_extra["family"] = device.family
+        device_brand = device.brand or ""
+        device_model = device.model or ""
+        device_family = device.family or ""
 
-    return data
+    return _intern(
+        _AgentRecord(
+            browser_family=_intern(browser_family),
+            browser_version=browser_version,
+            browser_version_string=_intern(".".join(browser_version)),
+            os_family=_intern(os_family),
+            os_version=os_version,
+            os_version_string=_intern(".".join(os_version)),
+            device_brand=_intern(device_brand),
+            device_model=_intern(device_model),
+            device_family=_intern(device_family),
+            device_is_bot=is_bot,
+        )
+    )
 
 
-def _parse_agent_cached(string: str) -> UserAgentModel:
-    """Return a cached user agent or parse and cache a missing value."""
+def _to_fields(string: str, record: _AgentRecord) -> dict[str, Any]:
+    """Build the ``UserAgentModel`` field values for a cached record.
+
+    The dict is new on every call, lists and dicts included, so the caller
+    owns it. Keys follow the model's field order so rows built from them keep
+    the same layout.
+    """
+
+    device_family = record.device_family
+    return {
+        "user_agent": string,
+        "browser_family": record.browser_family,
+        "browser_version": list(record.browser_version),
+        "browser_version_string": record.browser_version_string,
+        "browser_extra": {},
+        "os_family": record.os_family,
+        "os_version": list(record.os_version),
+        "os_version_string": record.os_version_string,
+        "lang": "",
+        "device_brand": record.device_brand,
+        "device_model": record.device_model,
+        "device_extra": {"family": device_family} if device_family else {},
+        "device_is_mobile": False,
+        "device_is_tablet": False,
+        "device_is_touch_capable": False,
+        "device_is_pc": False,
+        "device_is_bot": record.device_is_bot,
+    }
+
+
+def _to_model(string: str, record: _AgentRecord) -> UserAgentModel:
+    """Build a fresh ``UserAgentModel`` from a cached record.
+
+    This is what ``UserAgentModel.model_construct`` does once it has every
+    field, minus its per-field default and alias handling, which makes it
+    about three times cheaper.
+    """
+
+    model = _new_object(UserAgentModel)
+    _set_attribute(model, "__dict__", _to_fields(string, record))
+    _set_attribute(model, "__pydantic_fields_set__", set(_USER_AGENT_FIELDS))
+    _set_attribute(model, "__pydantic_extra__", None)
+    _set_attribute(model, "__pydantic_private__", None)
+    return model
+
+
+def _parse_agent_uncached(string: str) -> UserAgentModel:
+    """Parse a non-null user-agent string without consulting the LRU cache."""
+
+    return _to_model(string, _parse_record(string))
+
+
+def _parse_record_cached(string: str) -> _AgentRecord:
+    """Return a cached record or parse and cache a missing value."""
 
     data = _get_cached_agent(string)
     if data is not None:
         return data
-    return _store_cached_agent(string, _parse_agent_uncached(string))
+    return _store_cached_agent(string, _parse_record(string))
 
 
-def _copy_user_agent(data: UserAgentModel) -> UserAgentModel:
-    """Return an isolated copy of cached user-agent data without validation."""
+def _parse_agent_cached(string: str) -> UserAgentModel:
+    """Return a fresh model for ``string``, parsing it only on a cache miss."""
 
-    copied = data.__dict__.copy()
-    for field_name in _MUTABLE_USER_AGENT_FIELDS:
-        copied[field_name] = copy(copied[field_name])
-    return UserAgentModel.model_construct(**copied)
+    return _to_model(string, _parse_record_cached(string))
 
 
 @capture_span()
 def parse_agent(string: str | None) -> UserAgentModel:
     """Parse a user agent string into structured data."""
 
-    return _copy_user_agent(_parse_agent_cached(string or ""))
+    return _parse_agent_cached(string or "")
 
 
 def parse_agent_for_insert(string: str | None) -> UserAgentModel:
     """
     Parse a user-agent string for the ingest hot path.
 
-    The returned object is the cached instance and must not be mutated directly.
-    Row construction copies the mutable fields before inserting.
+    Unlike ``parse_agent`` this records no tracing span. The returned model is
+    built for this call alone and may be mutated.
     """
 
     return _parse_agent_cached(string or "")
 
 
-async def parse_agent_for_insert_async(string: str | None) -> UserAgentModel:
-    """Return cache hits inline and offload only real parser work to a thread."""
+async def agent_fields_for_insert_async(string: str | None) -> dict[str, Any]:
+    """Return the parsed agent's row fields without building a model.
+
+    Cache hits are answered inline and only real parser work goes to a
+    thread. The result is the dict a ``UserAgentModel`` would hold, built for
+    this call alone, so the caller may mutate it.
+    """
 
     normalized = string or ""
     data = _get_cached_agent(normalized)
-    if data is not None:
-        return data
-    return await run_cpu_task(_parse_agent_cached, normalized)
+    if data is None:
+        data = await run_cpu_task(_parse_record_cached, normalized)
+    return _to_fields(normalized, data)
+
+
+def warm_user_agent_parser() -> None:
+    """Pay the parsers' one-time initialisation before the first request.
+
+    The first parse in a process compiles the ua-parser and crawler regexes
+    (about 75-120 ms), which would otherwise block the event loop on the first
+    request after every deploy. The LRU cache is left untouched.
+    """
+
+    _parse_record(WARM_UP_USER_AGENT)
