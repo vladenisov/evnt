@@ -235,3 +235,52 @@ def test_missing_insert_settings_default_to_async_inserts():
     connector = ClickHouseConnector(object(), tables=_tables())
 
     assert connector.insert_settings["async_insert"] == 1
+
+
+def _reference_values(rows, fields):
+    """The per-cell conversion insert_batch used before the column plan."""
+    from evnt.storage.clickhouse.schema import TupleColumnDef as _Tuple
+
+    sanitize = ClickHouseConnector._sanitize_clickhouse_value
+    data = []
+    for row in rows:
+        values = []
+        for field in fields:
+            if isinstance(field, _Tuple):
+                values.append(
+                    tuple(
+                        sanitize(e.type_name, row.get(e.payload_name))
+                        for e in field.elements
+                        if e.payload_name is not None
+                    )
+                )
+            else:
+                values.append(sanitize(field.type_name, row.get(field.payload_name)))
+        data.append(values)
+    return data
+
+
+def test_column_plan_matches_per_cell_conversion_on_every_column():
+    from evnt.storage.clickhouse.connector import _build_plan
+    from evnt.storage.clickhouse.schema import TupleColumnDef as _Tuple
+    from evnt.storage.clickhouse.schema import get_fields_for_table_group
+
+    fields = tuple(
+        f
+        for f in get_fields_for_table_group("evnt")
+        if isinstance(f, _Tuple) or f.payload_name is not None
+    )
+    names = [e.payload_name for f in fields for e in getattr(f, "elements", (f,)) if e.payload_name]
+    uuid_text = "5c5c6a3e-1b1f-4f0e-9d3b-2a1b3c4d5e6f"
+    rows = [
+        {},  # every value missing
+        dict.fromkeys(names),
+        dict.fromkeys(names, ""),
+        dict.fromkeys(names, uuid_text),
+        {name: UUID(uuid_text) for name in names},
+        dict.fromkeys(names, 7),
+    ]
+
+    assert ClickHouseConnector._rows_to_values(rows, _build_plan(fields)) == _reference_values(
+        rows, fields
+    )

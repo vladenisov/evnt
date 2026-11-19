@@ -13,14 +13,20 @@ from ipaddress import IPv4Address
 from uuid import UUID
 
 import pytest
+from aio_pika.exceptions import ChannelInvalidStateError, ConnectionClosed, DeliveryError
 from clickhouse_connect.driver.exceptions import DataError
+from pamqp.commands import Basic
 
+import evnt.ingest.rabbitmq as publisher_module
 from evnt.config import RabbitMQConfig
+from evnt.exceptions import IngestUnavailableError
+from evnt.ingest.health import RabbitMQHealthChecker
 from evnt.ingest.rabbitmq import (
     QueuedInsertPayload,
-    RabbitMQBatchWorker,
     RabbitMQPublisher,
 )
+from evnt.ingest.worker import RabbitMQBatchWorker
+from evnt.observability.logging import ingest_unavailable_handler
 
 
 class _RecordingExchange:
@@ -238,6 +244,16 @@ def test_backoff_seconds_grows_exponentially_and_caps():
     assert worker._backoff_seconds() == RabbitMQBatchWorker.MAX_BACKOFF_SECONDS
 
 
+def test_backoff_survives_a_failure_count_beyond_float_range():
+    # About 17 hours of a 60 s backoff; 2.0 ** 1024 would raise OverflowError
+    # and stop the worker in the middle of a long outage.
+    worker = _worker(_BatchSink(), retry_delay_ms=1000)
+    worker.failure_counts["evnt"] = 5000
+
+    assert worker._backoff_seconds() == RabbitMQBatchWorker.MAX_BACKOFF_SECONDS
+    assert worker._pending_backoff_seconds() == RabbitMQBatchWorker.MAX_BACKOFF_SECONDS
+
+
 @pytest.mark.anyio
 async def test_flush_failure_increments_failure_count_then_resets(anyio_backend):
     sink = _BatchSink(fail=True)
@@ -371,3 +387,269 @@ async def test_worker_close_closes_channel_and_connection(anyio_backend):
 
     assert channel.closed is True
     assert worker.connection.closed is True
+
+
+class _StalledExchange:
+    """Accepts publishes but never confirms them, like a broker in a memory alarm."""
+
+    def __init__(self):
+        self.started = 0
+
+    async def publish(self, message, routing_key, mandatory=True):
+        self.started += 1
+        await asyncio.Event().wait()
+
+
+def _publisher_with(config: RabbitMQConfig, channel):
+    return RabbitMQPublisher(
+        connection=_FakeConnection(),
+        channel=channel,
+        config=config,
+        tables={"evnt": {"local": {"name": "l"}, "distributed": {"name": "d"}}},
+        database="evnt",
+    )
+
+
+@pytest.mark.anyio
+async def test_publisher_fails_fast_when_the_broker_stops_confirming(anyio_backend):
+    channel = _RecordingChannel(exchange=_StalledExchange())
+    publisher = _publisher_with(
+        RabbitMQConfig(publish_timeout_seconds=0.05),
+        channel,
+    )
+
+    with pytest.raises(IngestUnavailableError) as excinfo:
+        await publisher.insert_rows([{"aid": "a"}])
+
+    assert excinfo.value.retry_after_seconds == 1
+
+
+@pytest.mark.anyio
+async def test_publisher_caps_unconfirmed_publishes(anyio_backend):
+    exchange = _StalledExchange()
+    publisher = _publisher_with(
+        RabbitMQConfig(
+            publish_timeout_seconds=0.1,
+            max_inflight_publishes=3,
+            coalesce_window_ms=0,
+        ),
+        _RecordingChannel(exchange=exchange),
+    )
+
+    results = await asyncio.gather(
+        *(publisher.insert_rows([{"aid": "a"}]) for _ in range(10)),
+        return_exceptions=True,
+    )
+
+    # Only the window's worth reached the broker; the rest timed out waiting for
+    # a slot instead of piling more unconfirmed messages onto a stalled channel.
+    assert exchange.started == 3
+    assert all(isinstance(result, IngestUnavailableError) for result in results)
+
+
+@pytest.mark.anyio
+async def test_publishes_waiting_for_a_slot_hold_no_encoded_body(anyio_backend, monkeypatch):
+    encoded: list[int] = []
+    real_encode = publisher_module._encode_queued_insert_payload
+
+    def _counting_encode(table_group, rows):
+        encoded.append(len(rows))
+        return real_encode(table_group, rows)
+
+    monkeypatch.setattr(publisher_module, "_encode_queued_insert_payload", _counting_encode)
+    publisher = _publisher_with(
+        RabbitMQConfig(
+            publish_timeout_seconds=0.1,
+            max_inflight_publishes=2,
+            coalesce_window_ms=0,
+        ),
+        _RecordingChannel(exchange=_StalledExchange()),
+    )
+
+    await asyncio.gather(
+        *(publisher.insert_rows([{"aid": "a"}]) for _ in range(10)),
+        return_exceptions=True,
+    )
+
+    # Only the publishes that got a slot built a message body.
+    assert len(encoded) == 2
+
+
+@pytest.mark.anyio
+async def test_ingest_unavailable_handler_answers_503_with_retry_after(anyio_backend):
+    response = await ingest_unavailable_handler(
+        None,
+        IngestUnavailableError("down", retry_after_seconds=5),
+    )
+
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "5"
+
+
+class _HealthChannel:
+    def __init__(self, missing=()):
+        self.missing = set(missing)
+        self.is_closed = False
+        self.declared = []
+
+    async def declare_queue(self, name, *, durable, passive, robust):
+        self.declared.append((name, passive, robust))
+        if name in self.missing:
+            # The broker answers a failed passive declare by closing the channel.
+            self.is_closed = True
+            raise RuntimeError(f"NOT_FOUND - no queue '{name}'")
+
+
+class _HealthConnection:
+    def __init__(self, channels):
+        self.channels = list(channels)
+        self.opened = 0
+
+    async def channel(self, publisher_confirms=True):
+        self.opened += 1
+        return self.channels.pop(0)
+
+
+@pytest.mark.anyio
+async def test_health_check_asks_the_broker_on_its_own_channel(anyio_backend):
+    channel = _HealthChannel()
+    connection = _HealthConnection([channel])
+    checker = RabbitMQHealthChecker(connection, "q", "q.failed", timeout_seconds=1)
+
+    assert await checker.check() == {"rabbitmq": True}
+    assert await checker.check() == {"rabbitmq": True}
+
+    # robust=False keeps the queues out of aio-pika's cache, so each check is a
+    # real passive declare, and one channel is reused across checks.
+    assert channel.declared == [("q", True, False), ("q.failed", True, False)] * 2
+    assert connection.opened == 1
+
+
+@pytest.mark.anyio
+async def test_health_check_reports_a_missing_queue_and_reopens_its_channel(anyio_backend):
+    broken = _HealthChannel(missing={"q.failed"})
+    healthy = _HealthChannel()
+    connection = _HealthConnection([broken, healthy])
+    checker = RabbitMQHealthChecker(connection, "q", "q.failed", timeout_seconds=1)
+
+    assert await checker.check() == {"rabbitmq": False}
+    assert await checker.check() == {"rabbitmq": True}
+    assert connection.opened == 2
+
+
+@pytest.mark.anyio
+async def test_health_check_times_out_instead_of_hanging(anyio_backend):
+    class _HangingConnection:
+        async def channel(self, publisher_confirms=True):
+            await asyncio.Event().wait()
+
+    checker = RabbitMQHealthChecker(_HangingConnection(), "q", timeout_seconds=0.05)
+
+    assert await checker.check() == {"rabbitmq": False}
+
+
+class _FailingExchange:
+    def __init__(self, error):
+        self.error = error
+
+    async def publish(self, message, routing_key, mandatory=True):
+        raise self.error
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "error",
+    [
+        ChannelInvalidStateError("channel closed"),
+        ConnectionClosed(320, "CONNECTION_FORCED"),
+        DeliveryError(None, Basic.Nack(delivery_tag=1)),
+    ],
+    ids=["closed-channel", "connection-lost", "nack-or-return"],
+)
+async def test_publisher_answers_503_when_the_broker_drops_the_publish(anyio_backend, error):
+    publisher = _publisher_with(
+        RabbitMQConfig(coalesce_window_ms=0),
+        _RecordingChannel(exchange=_FailingExchange(error)),
+    )
+
+    with pytest.raises(IngestUnavailableError):
+        await publisher.insert_rows([{"aid": "a"}])
+
+
+@pytest.mark.anyio
+async def test_a_timed_out_publish_frees_its_window_slot(anyio_backend):
+    class _StallOnce:
+        def __init__(self):
+            self.calls = 0
+
+        async def publish(self, message, routing_key, mandatory=True):
+            self.calls += 1
+            if self.calls == 1:
+                await asyncio.Event().wait()
+
+    exchange = _StallOnce()
+    publisher = _publisher_with(
+        RabbitMQConfig(
+            publish_timeout_seconds=0.05,
+            max_inflight_publishes=1,
+            coalesce_window_ms=0,
+        ),
+        _RecordingChannel(exchange=exchange),
+    )
+
+    with pytest.raises(IngestUnavailableError):
+        await publisher.insert_rows([{"aid": "a"}])
+    await publisher.insert_rows([{"aid": "b"}])
+
+    assert exchange.calls == 2
+
+
+@pytest.mark.anyio
+async def test_health_check_closes_a_closed_channel_before_replacing_it(anyio_backend):
+    class _Channel(_HealthChannel):
+        def __init__(self):
+            super().__init__()
+            self.close_calls = 0
+
+        async def close(self):
+            self.close_calls += 1
+
+    first, second = _Channel(), _Channel()
+    connection = _HealthConnection([first, second])
+    checker = RabbitMQHealthChecker(connection, "q", timeout_seconds=1)
+
+    await checker.check()
+    first.is_closed = True
+    await checker.check()
+
+    # Closing it stops a robust channel from restoring itself after a
+    # reconnect, which would leave a second channel open on the broker.
+    assert first.close_calls == 1
+    assert connection.opened == 2
+
+
+@pytest.mark.anyio
+async def test_merged_requests_all_get_503_when_their_publish_stalls(anyio_backend):
+    """The default path end to end: coalescer, then publish timeout, then 503 for all."""
+    exchange = _StalledExchange()
+    publisher = _publisher_with(
+        RabbitMQConfig(publish_timeout_seconds=0.05, coalesce_window_ms=5),
+        _RecordingChannel(exchange=exchange),
+    )
+
+    results = await asyncio.gather(
+        *(publisher.insert_rows([{"aid": str(i)}]) for i in range(5)),
+        return_exceptions=True,
+    )
+
+    assert exchange.started == 1
+    assert all(isinstance(result, IngestUnavailableError) for result in results)
+
+
+def test_create_app_answers_ingest_unavailable_with_503():
+    from evnt.main import create_app
+    from evnt.observability.logging import ingest_unavailable_handler as handler
+
+    app = create_app()
+
+    assert app.exception_handlers[IngestUnavailableError] is handler

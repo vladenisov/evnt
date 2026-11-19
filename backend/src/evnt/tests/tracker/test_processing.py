@@ -1,3 +1,4 @@
+import asyncio
 import importlib
 import json
 from ipaddress import IPv4Address
@@ -7,6 +8,7 @@ import pytest
 from evnt.tracker.models import (
     InsertModel,
     PayloadElementModel,
+    PayloadModel,
     UserAgentModel,
 )
 from evnt.tracker.processing import process_data
@@ -154,3 +156,34 @@ def test_build_initial_model_skips_revalidation_and_copies_mutable_defaults(
     assert second.ue == {}
     assert second.extra == {}
     assert second.screen == {}
+
+
+@pytest.mark.anyio
+async def test_large_batches_yield_to_the_event_loop(monkeypatch, anyio_backend):
+    """Other requests must get turns while one big batch is processed."""
+    module = importlib.import_module("evnt.tracker.processing")
+
+    async def parse(*_args):
+        return InsertModel.model_construct(extra={})
+
+    monkeypatch.setattr(module, "parse_payload", parse)
+    body = PayloadModel.model_construct(
+        data=[PayloadElementModel.model_construct() for _ in range(200)],
+    )
+    ticks = 0
+
+    async def ticker():
+        nonlocal ticks
+        while True:
+            ticks += 1
+            await asyncio.sleep(0)
+
+    task = asyncio.create_task(ticker())
+    await asyncio.sleep(0)
+    before = ticks
+    rows = await process_data(body, "", None, None)
+    task.cancel()
+
+    assert len(rows) == 200
+    # 200 events at one yield per 64 give the ticker at least 3 turns.
+    assert ticks - before >= 3

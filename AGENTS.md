@@ -34,7 +34,7 @@ backend/
     api/                         HTTP routers: tracker, encrypted, proxy, health; deps.py
     tracker/                     Snowplow payload models, parsing, Iglu, UA, IP
     storage/clickhouse/          client factory, connector, DDL, field registry
-    ingest/rabbitmq.py           publisher + batch worker
+    ingest/                      RabbitMQ publisher (rabbitmq.py), batch worker (worker.py)
     middleware/, observability/  raw-ASGI middleware; logging, tracing, APM
     tests/                       mirrors the package; tests/integration needs real backends
 frontend/                        Vue 3 demo SPA (Vite, Bun), served at /demo/

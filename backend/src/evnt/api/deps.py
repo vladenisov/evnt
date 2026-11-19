@@ -1,4 +1,10 @@
-"""FastAPI dependencies shared by the collector routes."""
+"""FastAPI dependencies shared by the collector routes.
+
+Every dependency here is ``async def`` on purpose: FastAPI runs a plain ``def``
+dependency in the thread pool, and three or four such hops per request cost
+more than processing a small batch. They only read ``app.state``, settings and
+headers; keep them free of blocking work, since they now run on the event loop.
+"""
 
 import re
 from ipaddress import IPv4Address, IPv6Address
@@ -16,13 +22,13 @@ from evnt.tracker.ip import extract_ip_from_header
 _COUNTRY_CODE = re.compile(r"[A-Z]{2}|T1")
 
 
-def get_db_connector(request: Request) -> RowSink:
+async def get_db_connector(request: Request) -> RowSink:
     """Return the active ingest connector from application state."""
     connector: RowSink = request.app.state.connector
     return connector
 
 
-def get_keyring(request: Request) -> Keyring:
+async def get_keyring(request: Request) -> Keyring:
     """Return the keyring resolved during application startup."""
     keyring: Keyring | None = getattr(request.app.state, "keyring", None)
     if keyring is None:
@@ -33,7 +39,7 @@ def get_keyring(request: Request) -> Keyring:
     return keyring
 
 
-def get_client_ip(request: Request) -> IPv4Address | IPv6Address | None:
+async def get_client_ip(request: Request) -> IPv4Address | IPv6Address | None:
     """Return the end user's IP address.
 
     With ``security.trust_proxy_headers`` on, the configured forwarding headers
@@ -54,7 +60,7 @@ def get_client_ip(request: Request) -> IPv4Address | IPv6Address | None:
     return None
 
 
-def get_client_country(request: Request) -> str | None:
+async def get_client_country(request: Request) -> str | None:
     """Read a country code only from an explicitly trusted proxy header."""
     header_name = settings.common.snowplow.user_country_header
     if not settings.security.trust_proxy_headers or header_name is None:

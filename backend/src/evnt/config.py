@@ -46,11 +46,16 @@ from evnt.constants import (
     DEFAULT_PROXY_ENDPOINT,
     DEFAULT_RABBITMQ_BATCH_SIZE,
     DEFAULT_RABBITMQ_BATCH_TIMEOUT_MS,
+    DEFAULT_RABBITMQ_COALESCE_MAX_ROWS,
+    DEFAULT_RABBITMQ_COALESCE_WINDOW_MS,
     DEFAULT_RABBITMQ_CONNECT_TIMEOUT_SECONDS,
     DEFAULT_RABBITMQ_HOST,
     DEFAULT_RABBITMQ_INSERT_TIMEOUT_SECONDS,
+    DEFAULT_RABBITMQ_MAX_INFLIGHT_PUBLISHES,
+    DEFAULT_RABBITMQ_MAX_INSERT_ATTEMPTS,
     DEFAULT_RABBITMQ_PORT,
     DEFAULT_RABBITMQ_PREFETCH_COUNT,
+    DEFAULT_RABBITMQ_PUBLISH_TIMEOUT_SECONDS,
     DEFAULT_RABBITMQ_QUEUE_NAME,
     DEFAULT_RABBITMQ_RETRY_DELAY_MS,
     DEFAULT_RABBITMQ_STARTUP_RETRY_INTERVAL_MS,
@@ -524,6 +529,19 @@ class RabbitMQConfig(BaseModel):
         default=DEFAULT_RABBITMQ_INSERT_TIMEOUT_SECONDS,
         gt=0,
     )
+    publish_timeout_seconds: float = Field(
+        default=DEFAULT_RABBITMQ_PUBLISH_TIMEOUT_SECONDS,
+        gt=0,
+    )
+    max_inflight_publishes: int = Field(
+        default=DEFAULT_RABBITMQ_MAX_INFLIGHT_PUBLISHES,
+        gt=0,
+    )
+    # 0 retries a message that keeps failing while other inserts succeed forever.
+    max_insert_attempts: int = Field(default=DEFAULT_RABBITMQ_MAX_INSERT_ATTEMPTS, ge=0)
+    # 0 disables merging: one message per request.
+    coalesce_window_ms: int = Field(default=DEFAULT_RABBITMQ_COALESCE_WINDOW_MS, ge=0)
+    coalesce_max_rows: int = Field(default=DEFAULT_RABBITMQ_COALESCE_MAX_ROWS, gt=0)
     connect_timeout_seconds: int = Field(
         default=DEFAULT_RABBITMQ_CONNECT_TIMEOUT_SECONDS,
         gt=0,

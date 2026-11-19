@@ -106,7 +106,7 @@ def test_validate_iglu_payload_warns_when_payload_is_invalid(monkeypatch, tmp_pa
         """,
     )
 
-    result = iglu_module.validate_iglu_payload(schema_uri, {"age": 10})
+    result = iglu_module.validate_iglu_payload(schema_uri, {})
 
     assert result.status == "warning"
     assert "required property" in result.error

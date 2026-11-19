@@ -6,9 +6,32 @@ from typing import Any, cast
 import orjson
 import structlog
 
+from evnt.observability.ratelimit import KeyedRateLimiter
 from evnt.observability.tracing import capture_span
 
 logger = structlog.get_logger(__name__)
+
+# A client can send an undecodable ``ue_px``/``cx`` (or ``ue_pr``/``co``) on every
+# event, so these warnings are rate-limited the same way as the malformed-input
+# warnings in ``evnt.tracker.payload``: lines carry ``suppressed``, the
+# occurrences of that warning held back since its previous line.
+_MALFORMED_JSON_LOG = KeyedRateLimiter()  # keyed by the warning text
+
+
+def reset_log_rate_limits() -> None:
+    """Forget every rate-limited warning key, so tests start from a clean slate."""
+
+    _MALFORMED_JSON_LOG.reset()
+
+
+def _warn_malformed(event: str, **fields: Any) -> None:
+    """Log a fixed-text warning about malformed client input, rate-limited by text."""
+
+    if (permit := _MALFORMED_JSON_LOG.take(event)) is not None:
+        if permit.evicted is not None:
+            key, suppressed = permit.evicted
+            logger.warning(key, suppressed=suppressed, evicted=True)
+        logger.warning(event, **permit.log_fields(), **fields)
 
 
 @capture_span()
@@ -62,7 +85,7 @@ def find_available(
     try:
         parsed = orjson.loads(result)
     except (orjson.JSONDecodeError, TypeError) as exc:
-        logger.warning(
+        _warn_malformed(
             "Failed to decode Snowplow JSON payload",
             error=str(exc),
             value_type=type(result).__name__,
@@ -72,7 +95,7 @@ def find_available(
     if isinstance(parsed, dict):
         return cast(dict[str, Any], parsed)
 
-    logger.warning(
+    _warn_malformed(
         "Snowplow JSON payload has unexpected type",
         decoded_type=type(parsed).__name__,
     )

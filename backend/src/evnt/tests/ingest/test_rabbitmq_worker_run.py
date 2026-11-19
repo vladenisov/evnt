@@ -3,8 +3,9 @@ import asyncio
 import pytest
 
 from evnt.config import RabbitMQConfig
-from evnt.ingest import rabbitmq as rabbitmq_module
-from evnt.ingest.rabbitmq import QueuedInsertPayload, RabbitMQBatchWorker
+from evnt.ingest import worker as worker_module
+from evnt.ingest.rabbitmq import QueuedInsertPayload
+from evnt.ingest.worker import RabbitMQBatchWorker
 
 
 class _FakeExchange:
@@ -158,7 +159,7 @@ async def test_run_applies_backoff_once_per_failure_level(
     async def heartbeat_loop():
         await asyncio.Event().wait()
 
-    monkeypatch.setattr(rabbitmq_module.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(worker_module.asyncio, "sleep", fake_sleep)
     monkeypatch.setattr(worker, "_heartbeat_loop", heartbeat_loop)
 
     with pytest.raises(

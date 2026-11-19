@@ -13,8 +13,8 @@ from contextlib import suppress
 import pytest
 
 from evnt.constants import WORKER_HEARTBEAT_SECONDS, WORKER_LIVENESS_STALE_SECONDS
-from evnt.ingest import rabbitmq as rabbitmq_module
-from evnt.ingest.rabbitmq import RabbitMQBatchWorker
+from evnt.ingest import worker as worker_module
+from evnt.ingest.worker import RabbitMQBatchWorker
 
 
 def test_heartbeat_interval_below_stale_threshold():
@@ -33,8 +33,8 @@ def test_mark_alive_replaces_liveness_file_atomically(monkeypatch, tmp_path):
         observed_contents.append(liveness_path.read_text())
         real_replace(source, destination)
 
-    monkeypatch.setattr(rabbitmq_module, "WORKER_LIVENESS_PATH", liveness_path)
-    monkeypatch.setattr(rabbitmq_module.os, "replace", observing_replace)
+    monkeypatch.setattr(worker_module, "WORKER_LIVENESS_PATH", liveness_path)
+    monkeypatch.setattr(worker_module.os, "replace", observing_replace)
 
     RabbitMQBatchWorker._mark_alive(object())
 
@@ -87,6 +87,6 @@ def test_busy_seconds_is_zero_while_idle_and_grows_during_step(monkeypatch):
     worker = types.SimpleNamespace(_busy_since=None)
     assert RabbitMQBatchWorker._busy_seconds(worker) == 0.0
 
-    monkeypatch.setattr(rabbitmq_module.time, "monotonic", lambda: 1000.0)
+    monkeypatch.setattr(worker_module.time, "monotonic", lambda: 1000.0)
     worker._busy_since = 900.0
     assert RabbitMQBatchWorker._busy_seconds(worker) == 100.0

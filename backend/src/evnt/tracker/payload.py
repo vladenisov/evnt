@@ -8,13 +8,14 @@ from copy import copy
 from datetime import UTC, datetime
 from http.cookies import SimpleCookie
 from ipaddress import IPv4Address
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import orjson
 import structlog
 
 from evnt.config import settings
+from evnt.observability.ratelimit import KeyedRateLimiter, Permit
 from evnt.observability.tracing import async_capture_span, capture_span
 from evnt.tracker.iglu import ValidationResult, validate_iglu_payload
 from evnt.tracker.models import (
@@ -26,6 +27,54 @@ from evnt.tracker.models import (
 from evnt.tracker.utils import parse_base64
 
 logger = structlog.stdlib.get_logger()
+
+# A tracker can trigger the warnings below on every event it sends, and each
+# emitted line costs a few hundred microseconds, so they are rate-limited per
+# key. Lines carry ``suppressed``: how many occurrences of that key were held
+# back since its previous line. Two kinds of line count differently: a line
+# with ``untracked_suppressed`` came from the shared overflow bucket (the key
+# table was full or the key too long), and that count spans every untracked
+# key; a line with ``evicted=True`` stands for no new occurrence and only
+# reports what a key dropped from the table still held back.
+_MALFORMED_INPUT_LOG = KeyedRateLimiter()  # keyed by the warning text
+_NO_PARSER_LOG = KeyedRateLimiter()  # keyed by schema URI
+type ValidationStage = Literal["contexts", "event"]
+_VALIDATION_LOG: dict[ValidationStage, KeyedRateLimiter] = {
+    "contexts": KeyedRateLimiter(),  # keyed by schema URI
+    "event": KeyedRateLimiter(),
+}
+_LOG_LIMITERS = (_MALFORMED_INPUT_LOG, _NO_PARSER_LOG, *_VALIDATION_LOG.values())
+
+
+def reset_log_rate_limits() -> None:
+    """Forget every rate-limited warning key, so tests start from a clean slate."""
+
+    for limiter in _LOG_LIMITERS:
+        limiter.reset()
+
+
+def _log_evicted(permit: Permit, event: str | None, key_field: str | None, **fields: Any) -> None:
+    """Report the held-back count of a key the limiter dropped to admit another.
+
+    ``event`` of ``None`` means the key is the event text itself; otherwise
+    the key goes into ``key_field``.
+    """
+
+    if permit.evicted is None:
+        return
+    key, suppressed = permit.evicted
+    if key_field is not None:
+        fields[key_field] = key
+    logger.warning(event or key, suppressed=suppressed, evicted=True, **fields)
+
+
+def _warn_malformed(event: str, **fields: Any) -> None:
+    """Log a fixed-text warning about malformed client input, rate-limited by text."""
+
+    if (permit := _MALFORMED_INPUT_LOG.take(event)) is not None:
+        _log_evicted(permit, None, None)
+        logger.warning(event, **permit.log_fields(), **fields)
+
 
 # Constants for empty values
 EMPTY_DICTS = (
@@ -111,7 +160,7 @@ def _safe_uuid(value: Any, fallback: UUID = DEFAULT_UUID) -> UUID:
     try:
         return UUID(value)
     except (ValueError, TypeError) as e:
-        logger.warning("Failed to parse UUID", value=value, error=str(e))
+        _warn_malformed("Failed to parse UUID", value=value, error=str(e))
         return fallback
 
 
@@ -125,7 +174,7 @@ def _safe_datetime(value: Any, fallback: datetime = DEFAULT_DATE) -> datetime:
     try:
         return datetime.fromisoformat(value)
     except (ValueError, TypeError) as e:
-        logger.warning("Failed to parse datetime", value=value, error=str(e))
+        _warn_malformed("Failed to parse datetime", value=value, error=str(e))
         return fallback
 
 
@@ -147,7 +196,7 @@ def _schema_name_from_uri(schema_uri: str) -> str:
 def _log_validation_result(
     validation: ValidationResult,
     schema_uri: str,
-    validation_stage: str,
+    validation_stage: ValidationStage,
 ) -> None:
     """Log Iglu validation outcomes without changing ingest behavior."""
 
@@ -164,8 +213,12 @@ def _log_validation_result(
     if validation.status != "warning":
         return
 
+    if (permit := _VALIDATION_LOG[validation_stage].take(schema_uri)) is None:
+        return
+    _log_evicted(permit, "Iglu validation warning", "schema", validation_stage=validation_stage)
     logger.warning(
         "Iglu validation warning",
+        **permit.log_fields(),
         validation_stage=validation_stage,
         schema=schema_uri,
         schema_path=schema_path,
@@ -191,7 +244,7 @@ def parse_cookies(cookies_str: str | None) -> dict[str, Any]:
     try:
         cookies.load(cookies_str)
     except Exception as e:
-        logger.warning("Failed to parse cookies", error=str(e))
+        _warn_malformed("Failed to parse cookies", error=str(e))
         return {}
 
     # Extract Snowplow specific cookies
@@ -201,7 +254,7 @@ def parse_cookies(cookies_str: str | None) -> dict[str, Any]:
         if name.startswith("_sp_id"):
             parts = cookie.value.split(".")
             if len(parts) < SP_ID_COOKIE_PARTS:
-                logger.warning("Incomplete _sp_id cookie", cookie_value=cookie.value)
+                _warn_malformed("Incomplete _sp_id cookie", cookie_value=cookie.value)
                 continue
 
             result["device_id"] = parts[0]
@@ -383,12 +436,12 @@ async def parse_contexts(
 
     for context in contexts["data"]:
         if not isinstance(context, dict):
-            logger.warning("Context is not a dict", context=context)
+            _warn_malformed("Context is not a dict", context=context)
             continue
 
         missing_keys = [k for k in ("schema", "data") if k not in context]
         if missing_keys:
-            logger.warning(
+            _warn_malformed(
                 "Context is missing required keys",
                 missing=missing_keys,
                 context=context,
@@ -406,22 +459,25 @@ async def parse_contexts(
         )
 
         if not isinstance(schema_uri, str):
-            logger.warning("Wrong schema type", context=context)
+            _warn_malformed("Wrong schema type", context=context)
             continue
 
         schema = _schema_name_from_uri(schema_uri)
 
         if not isinstance(data, dict):
-            logger.warning("Wrong data type", context=context)
+            _warn_malformed("Wrong data type", context=context)
             continue
 
         handler = CONTEXT_HANDLERS.get(schema)
         if handler is None:
-            logger.warning(
-                "Schema has no parser",
-                schema=schema,
-                schema_uri=schema_uri,
-            )
+            if (permit := _NO_PARSER_LOG.take(schema_uri)) is not None:
+                _log_evicted(permit, "Schema has no parser", "schema_uri")
+                logger.warning(
+                    "Schema has no parser",
+                    **permit.log_fields(),
+                    schema=schema,
+                    schema_uri=schema_uri,
+                )
             continue
 
         handler(model, data)
@@ -467,10 +523,14 @@ async def parse_event(event: dict[str, Any] | None, model: InsertModel) -> Inser
 
 def _build_initial_model(
     element: PayloadElementModel,
-    user_agent: UserAgentModel,
+    user_agent: UserAgentModel | dict[str, Any],
     ip: IPv4Address,
 ) -> InsertModel:
-    """Merge payload + UA + IP into a fresh InsertModel."""
+    """Merge payload + UA + IP into a fresh InsertModel.
+
+    ``user_agent`` is a model or just its field values as a dict (what the
+    ingest path passes, to skip building a model per request).
+    """
 
     # model_construct skips validation, so document the invariant the caller
     # must uphold: ``ip`` is an already-validated IPv4Address.
@@ -480,7 +540,7 @@ def _build_initial_model(
     for field_name in _MUTABLE_INSERT_DEFAULT_FIELDS:
         data[field_name] = copy(data[field_name])
 
-    data.update(user_agent.__dict__)
+    data.update(user_agent if type(user_agent) is dict else user_agent.__dict__)
     for field_name in _MUTABLE_USER_AGENT_FIELDS:
         data[field_name] = copy(data[field_name])
     data.update(element.__dict__)
@@ -509,7 +569,8 @@ def _apply_amp_fields(result: InsertModel) -> None:
 def _apply_amp_linker(result: InsertModel) -> None:
     """Decode the ``sp_amp_linker`` query param and extract the AMP device id."""
 
-    if not result.url:
+    # Checked for every event: skip URL parsing unless the param can be there.
+    if not result.url or "sp_amp_linker" not in result.url:
         return
 
     parsed_url = urlparse.urlparse(result.url)
@@ -523,7 +584,7 @@ def _apply_amp_linker(result: InsertModel) -> None:
         amp_device_id = parse_base64(amp_device_id)
         result.amp["device_id"] = UUID(amp_device_id)
     except Exception as e:
-        logger.warning("Failed to parse AMP linker", error=str(e))
+        _warn_malformed("Failed to parse AMP linker", error=str(e))
 
 
 def _apply_cookie_duid(result: InsertModel, cookies: str | None) -> None:
@@ -608,7 +669,7 @@ def _apply_client_hints_device(result: InsertModel) -> None:
 @async_capture_span()
 async def parse_payload(
     element: PayloadElementModel,
-    user_agent: UserAgentModel,
+    user_agent: UserAgentModel | dict[str, Any],
     ip: IPv4Address,
     cookies: str | None,
 ) -> InsertModel:
