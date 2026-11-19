@@ -8,6 +8,8 @@ from fastapi.responses import JSONResponse
 from fastapi_structlog import LogSettings, setup_logger
 from fastapi_structlog.settings import DBSettings, LogType, SysLogSettings
 
+from evnt.exceptions import IngestUnavailableError
+
 
 def init_logging(enable_json_logs: bool, log_level: str) -> None:
     """Initialize logging via fastapi-structlog.
@@ -30,9 +32,26 @@ def init_logging(enable_json_logs: bool, log_level: str) -> None:
 
     # Configure structlog / stdlib logging.
     setup_logger(settings)
+    _drop_disabled_levels_first()
 
     # Bind default contextual information (can be enriched in middlewares/routes)
     structlog.contextvars.bind_contextvars(service="evnt")
+
+
+def _drop_disabled_levels_first() -> None:
+    """Make a call below the configured level return before any processor runs.
+
+    fastapi-structlog's chain has no level filter, so a suppressed
+    ``logger.debug`` still ran every processor (a regex scan of all values,
+    a call-site frame walk, a timestamp) before the stdlib logger dropped the
+    record: about 20-40 us per call, several times per event on the hot path.
+    ``filter_by_level`` first makes such a call cost about 2 us.
+    """
+
+    processors = list(structlog.get_config()["processors"])
+    if processors and processors[0] is structlog.stdlib.filter_by_level:
+        return
+    structlog.configure(processors=[structlog.stdlib.filter_by_level, *processors])
 
 
 def _parse_content_length(value: str | None) -> int | None:
@@ -57,6 +76,20 @@ def _get_body_length(body: object) -> int | None:
     if isinstance(body, memoryview):
         return len(body.tobytes())
     return len(str(body).encode("utf-8", errors="ignore"))
+
+
+async def ingest_unavailable_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Answer 503 with ``Retry-After`` so trackers resend the batch later.
+
+    Not logged here: the component that gave up logs it, rate-limited, since an
+    outage would otherwise produce one line per request.
+    """
+    assert isinstance(exc, IngestUnavailableError)
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"detail": "ingest temporarily unavailable"},
+        headers={"Retry-After": str(exc.retry_after_seconds)},
+    )
 
 
 async def validation_exception_handler(request: Request, exc: Exception) -> JSONResponse:
