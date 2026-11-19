@@ -6,13 +6,17 @@ here including that a sealed payload lands in the same rows a plaintext POST
 would have produced, and that every rejection looks identical from outside.
 """
 
+import asyncio
 import base64
 
 import orjson
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from starlette.requests import ClientDisconnect, Request
 
 from evnt.api.deps import get_db_connector
+from evnt.api.encrypted import _read_limited_body
 from evnt.config import EncryptionKeyConfig, settings
 from evnt.constants import CONTENT_TYPE_GIF, CONTENT_TYPE_OCTET_STREAM, TRACKING_PIXEL
 from evnt.crypto import Keyring, generate_keypair, seal_envelope
@@ -344,3 +348,22 @@ class TestMounting:
 
         assert response.status_code == HTTP_UNAVAILABLE
         assert connector.inserted_batches == []
+
+
+def test_client_disconnect_mid_upload_is_a_plain_rejection():
+    """A dropped upload must surface as a 400, not an unhandled server error:
+    the unhandled form is logged with a traceback per request."""
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    request = Request(
+        {"type": "http", "method": "POST", "path": ENDPOINT, "headers": []},
+        receive,
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(_read_limited_body(request, limit=1024))
+
+    assert raised.value.status_code == HTTP_BAD_REQUEST
+    assert isinstance(raised.value.__cause__, ClientDisconnect)

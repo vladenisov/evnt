@@ -19,6 +19,7 @@ import orjson
 import structlog
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from pydantic import ValidationError
+from starlette.requests import ClientDisconnect
 from starlette.status import (
     HTTP_204_NO_CONTENT,
     HTTP_400_BAD_REQUEST,
@@ -81,14 +82,23 @@ async def _read_limited_body(request: Request, limit: int) -> bytes:
 
     chunks: list[bytes] = []
     total = 0
-    async for chunk in request.stream():
-        total += len(chunk)
-        if total > limit:
-            raise HTTPException(
-                status_code=HTTP_413_CONTENT_TOO_LARGE,
-                detail="payload too large",
-            )
-        chunks.append(chunk)
+    try:
+        async for chunk in request.stream():
+            total += len(chunk)
+            if total > limit:
+                raise HTTPException(
+                    status_code=HTTP_413_CONTENT_TOO_LARGE,
+                    detail="payload too large",
+                )
+            chunks.append(chunk)
+    except ClientDisconnect as exc:
+        # A mobile client dropping mid-upload is routine. Left unhandled it is
+        # logged as a server error with a full traceback, and a burst of those
+        # is enough to stall the event loop.
+        raise HTTPException(
+            status_code=HTTP_400_BAD_REQUEST,
+            detail="client disconnected",
+        ) from exc
     return b"".join(chunks)
 
 
