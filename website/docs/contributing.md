@@ -74,8 +74,10 @@ Unit tests fake both backends, so they cannot catch DDL ClickHouse rejects,
 client options the driver does not accept, or rows that never arrive. The
 tests in `src/evnt/tests/integration/` (marker `integration`) run against real
 servers: `db init` idempotency, plaintext and sealed POST/GET requests landing
-in ClickHouse through the real lifespan, atomic rejection of invalid batches,
-and the RabbitMQ worker delivering plaintext and encrypted requests.
+in ClickHouse through the real lifespan, a batch with bad events storing the
+rest with their `extra.validation` and `extra.tracker` keys, unknown context
+entities, tracker overrides, the fingerprint, visitor location and the anonymous flag
+round-tripping through the `extra` JSON column, and the RabbitMQ worker delivering plaintext and encrypted requests.
 
 They skip when the servers are unreachable. CI sets `EVNT_IT_REQUIRED=1`, which
 turns a skip into a failure. Against the compose stack:

@@ -2,7 +2,9 @@
 
 import pytest
 
+from evnt.tracker import element as element_module
 from evnt.tracker import payload as payload_module
+from evnt.tracker import processing as processing_module
 from evnt.tracker import utils as utils_module
 
 
@@ -16,3 +18,5 @@ def _fresh_payload_log_limits() -> None:
 
     payload_module.reset_log_rate_limits()
     utils_module.reset_log_rate_limits()
+    element_module.reset_log_rate_limits()
+    processing_module.reset_log_rate_limits()

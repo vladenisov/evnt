@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from evnt.config import settings
+from evnt.constants import TRACKING_PIXEL
 from evnt.tests.support import build_app, minimal_tp2_payload
 
 
@@ -60,18 +61,23 @@ def test_custom_ip_header_skips_invalid_entries(monkeypatch, connector, method, 
     assert connector.inserted_batches[0][0]["user_ip"] == IPv4Address(stored)
 
 
-def test_invalid_element_rejects_the_entire_batch(monkeypatch, connector):
+def test_unbuildable_element_is_dropped_and_the_rest_of_the_batch_stored(monkeypatch, connector):
+    """Trackers drop a batch answered 4xx and resend a 5xx forever, so one
+    event that cannot be built (no ``e``) must cost only itself."""
     app = build_app(monkeypatch)
     app.state.connector = connector
     payload = minimal_tp2_payload()
-    payload["data"].append({"aid": "invalid"})
+    payload["data"] += [{"aid": "invalid"}, "not an object", dict(payload["data"][0], aid="second")]
     with TestClient(app) as client:
         response = client.post("/tracker", json=payload)
-    assert response.status_code == 422
-    assert connector.inserted_batches == []
+    assert response.status_code == 204
+    assert [row["aid"] for row in connector.inserted_batches[0]] == ["example-app", "second"]
 
 
-@pytest.mark.parametrize("body", [b"{", b"null", b"[]", b'"not an object"'])
+@pytest.mark.parametrize(
+    "body",
+    [b"{", b"null", b"[]", b'"not an object"', b"{}", b'{"data": {"e": "pv"}}'],
+)
 def test_malformed_batch_never_reaches_storage(monkeypatch, connector, body):
     app = build_app(monkeypatch)
     app.state.connector = connector
@@ -83,13 +89,16 @@ def test_malformed_batch_never_reaches_storage(monkeypatch, connector, body):
     assert connector.inserted_batches == []
 
 
-def test_pixel_validation_failure_does_not_insert_a_row(monkeypatch, connector):
+def test_unbuildable_pixel_event_still_returns_the_pixel(monkeypatch, connector):
+    """The JS tracker loads ``/i`` as an image and resends on any failed load,
+    so an event that cannot be built is dropped but still gets the GIF."""
     app = build_app(monkeypatch)
     app.state.connector = connector
     with TestClient(app) as client:
         response = client.get("/i", params={"aid": "invalid"})
-    assert response.status_code == 422
-    assert connector.inserted_batches == []
+    assert response.status_code == 200
+    assert response.content == TRACKING_PIXEL
+    assert connector.inserted_batches == [[]]
 
 
 @pytest.mark.parametrize("method", ["POST", "GET"])

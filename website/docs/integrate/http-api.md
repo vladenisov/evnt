@@ -31,12 +31,36 @@ curl -i http://localhost:8000/tracker \
   --data '{"schema":"iglu:com.snowplowanalytics.snowplow/payload_data/jsonschema/1-0-4","data":[{"e":"pv","aid":"example-app","p":"web","tv":"js-3.0.0","res":"1920x1080"}]}'
 ```
 
-Invalid plaintext bodies or query parameters return `422` without inserting rows.
-If any element in a batch fails request-model validation, the entire batch is
-rejected. A storage error returns an error response so a tracker can retry.
+## Responses and bad events
 
-All encrypted validation failures return the same `400` response. Payloads over
-the configured body/query ceilings return `413`; a missing keyring returns `503`.
+Snowplow trackers drop a whole batch without retrying it when the collector
+answers `400`, `401`, `403`, `410` or `422`, and resend it on any other error
+until it succeeds. A single bad event therefore never changes the response:
+events are validated one at a time and the request gets its normal success
+status (`204` for a batch, `200` and the GIF for a pixel).
+
+| What arrived | What is stored | Response |
+| --- | --- | --- |
+| Valid event | The event | Success |
+| Event with invalid or missing fields that can still be built | The event; each failing field takes its default (empty string, `0`, none, a new `event_id`, the receive time) and the problem is listed in `extra.validation` | Success |
+| Event that cannot be built: not a JSON object, or no valid event type `e` | Nothing; the event is dropped, logged (rate-limited) and counted in `evnt_events_dropped_total` | Success; the rest of the batch is stored |
+| `POST` body that is not a Snowplow payload: not JSON, or no `data` list | Nothing | `422` |
+| Storage failure | Nothing | Error status, so the tracker retries |
+
+The `GET` pixel answers with the GIF even when its event is dropped: the
+JavaScript tracker loads it as an image and would resend the event forever on
+a failed load, and an email or `<img>` pixel has no use for an error body.
+
+Events that parsing fails on unexpectedly are not dropped either: they are
+stored with their validated atomic fields only (no contexts, no self-describing
+event data) and a `processing` entry in `extra.validation`. See
+[what the collector stores](trackers.md#what-the-collector-stores-in-extra) for
+the `extra.validation` and `extra.tracker` layout.
+
+A sealed request that cannot be opened, or whose plaintext is not a Snowplow
+payload, returns the same opaque `400`. Once opened, a sealed batch is handled
+event by event like a plaintext `POST`. Payloads over the configured body/query
+ceilings return `413`; a missing keyring returns `503`.
 
 ## Changing paths
 

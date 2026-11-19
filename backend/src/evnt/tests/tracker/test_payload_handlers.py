@@ -16,12 +16,14 @@ from uuid import UUID
 
 import pytest
 
+from evnt.tracker.element import EventIssues
 from evnt.tracker.models import (
     PayloadElementModel,
     UserAgentModel,
 )
 
 payload = importlib.import_module("evnt.tracker.payload")
+rows = importlib.import_module("evnt.tracker.rows")
 
 DEFAULT_UUID = UUID("00000000-0000-0000-0000-000000000000")
 DEFAULT_DATE = datetime(1970, 1, 1, tzinfo=UTC)
@@ -49,7 +51,7 @@ def _base_model(**overrides) -> payload.InsertModel:
             **overrides,
         },
     )
-    return payload._build_initial_model(
+    return rows.build_initial_model(
         element,
         UserAgentModel(),
         IPv4Address("127.0.0.1"),
@@ -129,8 +131,10 @@ async def test_client_session_bad_datetime_and_uuids_fall_back(anyio_backend):
         },
     )
 
-    assert result.sid == DEFAULT_UUID
-    assert result.duid == DEFAULT_UUID
+    # A malformed session or user id counts as absent: it no longer replaces
+    # an id the event already has (stored as the zero UUID when there is none).
+    assert result.sid is None
+    assert result.duid is None
     assert result.first_event_time == DEFAULT_DATE
     assert result.previous_session_id == DEFAULT_UUID
     assert result.first_event_id == DEFAULT_UUID
@@ -263,18 +267,23 @@ async def test_browser_context_keeps_dims_and_stashes_extra(anyio_backend):
 
 
 @pytest.mark.anyio
-async def test_unknown_schema_is_skipped_with_warning(anyio_backend):
+async def test_unknown_schema_is_kept_aside_not_merged_into_extra(anyio_backend):
     model = _base_model()
     contexts = {
         "data": [
             {"schema": "iglu:com.unknown/whatever/jsonschema/1-0-0", "data": {"x": 1}},
         ],
     }
+    issues = EventIssues()
 
-    result = await payload.parse_contexts(contexts, model)
+    result = await payload.parse_contexts(contexts, model, issues)
 
-    # Nothing crashed and no handler captured the data.
+    # No handler captured the data; it waits for extra.contexts instead.
     assert "x" not in result.extra
+    assert issues.contexts is not None
+    assert issues.contexts.by_schema == {
+        "com.unknown/whatever": [{"version": "1-0-0", "data": '{"x":1}'}]
+    }
 
 
 @pytest.mark.anyio

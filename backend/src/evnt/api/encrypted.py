@@ -26,7 +26,7 @@ from starlette.status import (
     HTTP_413_CONTENT_TOO_LARGE,
 )
 
-from evnt.api.deps import ClientCountry, ClientIP, DbConnector, KeyringDep
+from evnt.api.deps import ClientNetworkDep, DbConnector, KeyringDep
 from evnt.config import settings
 from evnt.constants import CONTENT_TYPE_GIF, CONTENT_TYPE_JAVASCRIPT, TRACKING_PIXEL
 from evnt.crypto import DecryptionError, Keyring, coerce_envelope_bytes, open_envelope
@@ -103,7 +103,13 @@ async def _read_limited_body(request: Request, limit: int) -> bytes:
 
 
 def _unseal(keyring: Keyring, raw: bytes) -> PayloadModel:
-    """Turn envelope bytes into a validated Snowplow payload."""
+    """Turn envelope bytes into a Snowplow payload envelope.
+
+    Only the envelope (a JSON object with a ``data`` list) is checked here, and
+    anything that fails is the same opaque 400 as a bad seal. The events inside
+    are validated one by one like a plaintext POST, so a bad event in a
+    correctly sealed batch is stored or dropped without failing the batch.
+    """
     config = settings.encryption
     try:
         envelope = coerce_envelope_bytes(raw)
@@ -120,7 +126,7 @@ def _unseal(keyring: Keyring, raw: bytes) -> PayloadModel:
         return PayloadModel.model_validate(document)
     except ValidationError as exc:
         raise _rejection(
-            "plaintext failed schema validation",
+            "plaintext is not a Snowplow payload",
             errors=exc.error_count(),
         ) from exc
 
@@ -180,8 +186,7 @@ async def encrypted_post(
     request: Request,
     connector: DbConnector,
     keyring: KeyringDep,
-    user_ip: ClientIP,
-    user_country: ClientCountry,
+    network: ClientNetworkDep,
     user_agent: Annotated[str | None, Header()] = None,
     cookie: Annotated[str | None, Header()] = None,
 ) -> Response:
@@ -196,7 +201,15 @@ async def encrypted_post(
     raw = await _read_limited_body(request, settings.encryption.max_envelope_bytes)
     body = _unseal(keyring, raw)
 
-    data = await process_data(body, user_agent, user_ip, cookie, user_country=user_country)
+    data = await process_data(
+        body,
+        user_agent,
+        network.ip,
+        cookie,
+        user_country=network.country,
+        geo=network.geo,
+        anonymous=network.anonymous,
+    )
     await connector.insert_rows(data)
     return Response(status_code=HTTP_204_NO_CONTENT)
 
@@ -206,8 +219,7 @@ async def encrypted_get(
     connector: DbConnector,
     d: Annotated[str, Query(description="Base64url-encoded envelope")],
     keyring: KeyringDep,
-    user_ip: ClientIP,
-    user_country: ClientCountry,
+    network: ClientNetworkDep,
     user_agent: Annotated[str | None, Header()] = None,
     cookie: Annotated[str | None, Header()] = None,
 ) -> Response:
@@ -229,7 +241,15 @@ async def encrypted_get(
         raise _rejection("query parameter is not ASCII") from exc
     body = _unseal(keyring, raw)
 
-    data = await process_data(body, user_agent, user_ip, cookie, user_country=user_country)
+    data = await process_data(
+        body,
+        user_agent,
+        network.ip,
+        cookie,
+        user_country=network.country,
+        geo=network.geo,
+        anonymous=network.anonymous,
+    )
     await connector.insert_rows(data)
     return Response(content=TRACKING_PIXEL, media_type=CONTENT_TYPE_GIF)
 

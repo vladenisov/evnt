@@ -51,7 +51,6 @@ def recording_logger(monkeypatch) -> RecordingLogger:
 @pytest.fixture
 def logger(monkeypatch, clock, recording_logger) -> RecordingLogger:
     recording = recording_logger
-    monkeypatch.setattr(payload_module, "_NO_PARSER_LOG", KeyedRateLimiter(INTERVAL, clock=clock))
     monkeypatch.setattr(
         payload_module, "_MALFORMED_INPUT_LOG", KeyedRateLimiter(INTERVAL, clock=clock)
     )
@@ -74,30 +73,28 @@ def _parse_contexts(contexts: dict) -> None:
     asyncio.run(payload_module.parse_contexts(contexts, SimpleNamespace()))
 
 
-def test_no_parser_warning_logs_first_event_then_once_per_interval(logger, clock):
+def _failing_validation(monkeypatch) -> None:
+    monkeypatch.setattr(
+        payload_module,
+        "validate_iglu_payload",
+        lambda schema_uri, data: payload_module.ValidationResult(
+            status="warning", error="invalid payload"
+        ),
+    )
+
+
+def test_entities_without_a_handler_are_not_logged(logger, monkeypatch):
+    # They are kept in extra.contexts now; the per-schema "Schema has no
+    # parser" warning they used to log was the main source of log noise.
+    monkeypatch.setattr(
+        payload_module,
+        "validate_iglu_payload",
+        lambda schema_uri, data: payload_module.ValidationResult(status="ok"),
+    )
     for _ in range(50):
-        _parse_contexts(_contexts(SCREEN_VIEW_URI))
-
-    lines = logger.named("Schema has no parser")
-    assert len(lines) == 1
-    assert lines[0]["schema_uri"] == SCREEN_VIEW_URI
-    assert lines[0]["schema"] == "com.snowplowanalytics.mobile/screen_view"
-    assert lines[0]["suppressed"] == 0
-
-    clock.now += INTERVAL
-    _parse_contexts(_contexts(SCREEN_VIEW_URI))
-
-    lines = logger.named("Schema has no parser")
-    assert len(lines) == 2
-    assert lines[1]["suppressed"] == 49
-
-
-def test_no_parser_warning_is_limited_per_schema(logger):
-    for _ in range(10):
         _parse_contexts(_contexts(SCREEN_VIEW_URI, OTHER_URI))
 
-    lines = logger.named("Schema has no parser")
-    assert [line["schema_uri"] for line in lines] == [SCREEN_VIEW_URI, OTHER_URI]
+    assert logger.warnings == []
 
 
 def test_validation_warning_is_limited_per_stage_and_schema(logger, monkeypatch, clock):
@@ -188,20 +185,19 @@ def test_cookie_and_value_warnings_are_limited(logger):
 
 def test_reset_log_rate_limits_forgets_every_key(recording_logger):
     logger = recording_logger
-    _parse_contexts(_contexts(SCREEN_VIEW_URI))
+    _parse_contexts({"data": ["not a dict"]})
     payload_module._safe_uuid("not-a-uuid")
 
     payload_module.reset_log_rate_limits()
 
-    _parse_contexts(_contexts(SCREEN_VIEW_URI))
+    _parse_contexts({"data": ["not a dict"]})
     payload_module._safe_uuid("not-a-uuid")
-    assert len(logger.named("Schema has no parser")) == 2
+    assert len(logger.named("Context is not a dict")) == 2
     assert len(logger.named("Failed to parse UUID")) == 2
 
 
 def test_module_limiters_are_all_reset_by_the_helper():
     limiters = {
-        id(payload_module._NO_PARSER_LOG),
         id(payload_module._MALFORMED_INPUT_LOG),
         *(id(limiter) for limiter in payload_module._VALIDATION_LOG.values()),
     }
@@ -209,21 +205,31 @@ def test_module_limiters_are_all_reset_by_the_helper():
     assert {id(limiter) for limiter in payload_module._LOG_LIMITERS} == limiters
 
 
+def _one_key_validation_log(monkeypatch, clock) -> None:
+    _failing_validation(monkeypatch)
+    monkeypatch.setattr(
+        payload_module,
+        "_VALIDATION_LOG",
+        {
+            "contexts": KeyedRateLimiter(INTERVAL, max_keys=1, clock=clock),
+            "event": KeyedRateLimiter(INTERVAL, clock=clock),
+        },
+    )
+
+
 def test_evicted_schema_reports_its_held_back_count_under_its_own_uri(
     monkeypatch, clock, recording_logger
 ):
     logger = recording_logger
-    monkeypatch.setattr(
-        payload_module, "_NO_PARSER_LOG", KeyedRateLimiter(INTERVAL, max_keys=1, clock=clock)
-    )
+    _one_key_validation_log(monkeypatch, clock)
     for _ in range(6):
         _parse_contexts(_contexts(SCREEN_VIEW_URI))
 
     clock.now += INTERVAL
     _parse_contexts(_contexts(OTHER_URI))
 
-    lines = logger.named("Schema has no parser")
-    assert [(line["schema_uri"], line["suppressed"], line.get("evicted")) for line in lines] == [
+    lines = logger.named("Iglu validation warning")
+    assert [(line["schema"], line["suppressed"], line.get("evicted")) for line in lines] == [
         (SCREEN_VIEW_URI, 0, None),
         (SCREEN_VIEW_URI, 5, True),
         (OTHER_URI, 0, None),
@@ -234,9 +240,7 @@ def test_overflow_line_does_not_pin_other_schemas_counts_on_this_one(
     monkeypatch, clock, recording_logger
 ):
     logger = recording_logger
-    monkeypatch.setattr(
-        payload_module, "_NO_PARSER_LOG", KeyedRateLimiter(INTERVAL, max_keys=1, clock=clock)
-    )
+    _one_key_validation_log(monkeypatch, clock)
     third_uri = "iglu:com.acme/third_context/jsonschema/1-0-0"
     _parse_contexts(_contexts(SCREEN_VIEW_URI))
     _parse_contexts(_contexts(OTHER_URI))
@@ -248,14 +252,16 @@ def test_overflow_line_does_not_pin_other_schemas_counts_on_this_one(
     clock.now += INTERVAL / 2
     _parse_contexts(_contexts(SCREEN_VIEW_URI, OTHER_URI))
 
-    lines = logger.named("Schema has no parser")
+    lines = logger.named("Iglu validation warning")
     assert lines[1] == {
         "untracked_suppressed": 0,
-        "schema": "com.acme/unknown_context",
-        "schema_uri": OTHER_URI,
+        "validation_stage": "contexts",
+        "schema": OTHER_URI,
+        "schema_path": None,
+        "error": "invalid payload",
     }
     assert "suppressed" not in lines[-1]
-    assert lines[-1]["schema_uri"] == OTHER_URI
+    assert lines[-1]["schema"] == OTHER_URI
     assert lines[-1]["untracked_suppressed"] == 4
 
 

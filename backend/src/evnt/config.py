@@ -32,6 +32,7 @@ from evnt.constants import (
     DEFAULT_CLICKHOUSE_STARTUP_RETRY_INTERVAL_MS,
     DEFAULT_CLICKHOUSE_STARTUP_TIMEOUT_SECONDS,
     DEFAULT_CLICKHOUSE_USERNAME,
+    DEFAULT_CLOUDFLARE_GEO_HEADERS,
     DEFAULT_DATABASE_NAME,
     DEFAULT_DB_CONNECT_TIMEOUT,
     DEFAULT_ENCRYPTED_ENDPOINT,
@@ -39,6 +40,7 @@ from evnt.constants import (
     DEFAULT_ENCRYPTED_MAX_PLAINTEXT_BYTES,
     DEFAULT_ENCRYPTED_MAX_QUERY_BYTES,
     DEFAULT_GET_ENDPOINT,
+    DEFAULT_HONOR_SP_ANONYMOUS,
     DEFAULT_INGEST_MODE,
     DEFAULT_MAX_REQUEST_BODY_BYTES,
     DEFAULT_METRICS_PATH,
@@ -109,6 +111,13 @@ class Snowplow(BaseModel):
     # parseable value wins), e.g. "CF-Connecting-IP,X-Forwarded-For".
     user_ip_header: str = "X-Forwarded-For"
     user_country_header: str | None = None
+    # Read Cloudflare's visitor location headers (cf-ipcity, cf-region, ...)
+    # into `extra.collector.geo`. Like the country header, only with
+    # `security.trust_proxy_headers` on, since any client can send them.
+    cloudflare_geo_headers: bool = DEFAULT_CLOUDFLARE_GEO_HEADERS
+    # Honour the `SP-Anonymous` request header: store no IP, country or
+    # location and ignore the `_sp_id` cookie for requests that carry it.
+    honor_sp_anonymous: bool = DEFAULT_HONOR_SP_ANONYMOUS
     # Iglu Central's `schemas/` directory, used to validate self-describing
     # JSON. A payload whose schema is missing here validates as `skipped`, so
     # the image build refuses to ship without it. The default is the vendored

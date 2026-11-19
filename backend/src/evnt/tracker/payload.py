@@ -4,25 +4,34 @@ Payload parsing functionality for Snowplow events.
 
 import urllib.parse as urlparse
 from collections.abc import Callable
-from copy import copy
 from datetime import UTC, datetime
 from http.cookies import SimpleCookie
 from ipaddress import IPv4Address
 from typing import Any, Literal
 from uuid import UUID
 
-import orjson
 import structlog
+from pydantic import ValidationError
 
 from evnt.config import settings
 from evnt.observability.ratelimit import KeyedRateLimiter, Permit
 from evnt.observability.tracing import async_capture_span, capture_span
+from evnt.tracker.element import EventIssues, without_collector_keys
 from evnt.tracker.iglu import ValidationResult, validate_iglu_payload
 from evnt.tracker.models import (
+    UINT64_MAX,
     InsertModel,
     PayloadElementModel,
     StructuredEvent,
     UserAgentModel,
+)
+from evnt.tracker.rows import (
+    apply_platform,
+    apply_true_timestamp,
+    build_initial_model,
+    keep_replaced_urls,
+    normalize_se_property,
+    normalize_se_value,
 )
 from evnt.tracker.utils import parse_base64
 
@@ -37,13 +46,12 @@ logger = structlog.stdlib.get_logger()
 # key; a line with ``evicted=True`` stands for no new occurrence and only
 # reports what a key dropped from the table still held back.
 _MALFORMED_INPUT_LOG = KeyedRateLimiter()  # keyed by the warning text
-_NO_PARSER_LOG = KeyedRateLimiter()  # keyed by schema URI
 type ValidationStage = Literal["contexts", "event"]
 _VALIDATION_LOG: dict[ValidationStage, KeyedRateLimiter] = {
     "contexts": KeyedRateLimiter(),  # keyed by schema URI
     "event": KeyedRateLimiter(),
 }
-_LOG_LIMITERS = (_MALFORMED_INPUT_LOG, _NO_PARSER_LOG, *_VALIDATION_LOG.values())
+_LOG_LIMITERS = (_MALFORMED_INPUT_LOG, *_VALIDATION_LOG.values())
 
 
 def reset_log_rate_limits() -> None:
@@ -114,32 +122,10 @@ DEFAULT_DATE = datetime(1970, 1, 1, tzinfo=UTC)
 # device_id.created_time.vid.now_time.last_visit_time.session_id
 SP_ID_COOKIE_PARTS = 6
 
-_SE_PR_JSON_ERRORS = (orjson.JSONDecodeError, TypeError)
+# ``isMobile`` from the client hints context: anything ``int()`` refuses.
+_CLIENT_HINT_ERRORS = (TypeError, ValueError)
 
 schemas = settings.common.snowplow.schemas
-
-_MUTABLE_USER_AGENT_FIELDS = (
-    "browser_version",
-    "browser_extra",
-    "os_version",
-    "device_extra",
-)
-
-# Resolve static InsertModel defaults once. Passing the complete set of static
-# fields to model_construct avoids Pydantic deep-copying every mutable default
-# for every event. Fields backed by a default_factory stay unresolved here so a
-# partially constructed PayloadElementModel still gets fresh UUID/timestamps.
-_INSERT_MODEL_DEFAULTS = {
-    field_name: value
-    # Constructed bare on purpose: only the defaults are wanted here.
-    for field_name, value in InsertModel.model_construct().__dict__.items()  # type: ignore[call-arg]
-    if InsertModel.model_fields[field_name].default_factory is None
-}
-_MUTABLE_INSERT_DEFAULT_FIELDS = tuple(
-    field_name
-    for field_name, value in _INSERT_MODEL_DEFAULTS.items()
-    if isinstance(value, (dict, list, set))
-)
 
 
 def _coalesce_dimension_value(value: Any, fallback: str) -> str:
@@ -157,11 +143,47 @@ def _safe_uuid(value: Any, fallback: UUID = DEFAULT_UUID) -> UUID:
     whole ingest. Logs a warning and returns ``fallback`` instead.
     """
 
+    # ``UUID()`` raises AttributeError, not ValueError, for a JSON number, list
+    # or object, so anything but a string is rejected before it gets there.
+    # Only the type is logged: the value may be an arbitrarily large object.
+    if value is not None and not isinstance(value, str):
+        _warn_malformed("Failed to parse UUID", value_type=type(value).__name__)
+        return fallback
     try:
         return UUID(value)
     except (ValueError, TypeError) as e:
         _warn_malformed("Failed to parse UUID", value=value, error=str(e))
         return fallback
+
+
+def _optional_uuid(value: Any) -> UUID | None:
+    """Parse a tracker-supplied UUID that may be absent.
+
+    Mobile trackers send the nil UUID for an anonymised user, and treating it
+    as an id would fold every anonymous user into one, so it means "absent"
+    here, as does a malformed value (logged by ``_safe_uuid``).
+    """
+
+    parsed = _safe_uuid(value)
+    return None if parsed.int == 0 else parsed
+
+
+def _as_str(value: Any) -> str | None:
+    """Return ``value`` if it is a string, else ``None``.
+
+    Context data is untrusted JSON; a number or object assigned to a String
+    column would fail the whole insert, not just this event.
+    """
+
+    return value if isinstance(value, str) else None
+
+
+def _as_uint(value: Any) -> int | None:
+    """Return ``value`` if it is an integer that fits a UInt64 column."""
+
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= UINT64_MAX:
+        return value
+    return None
 
 
 def _safe_datetime(value: Any, fallback: datetime = DEFAULT_DATE) -> datetime:
@@ -197,8 +219,16 @@ def _log_validation_result(
     validation: ValidationResult,
     schema_uri: str,
     validation_stage: ValidationStage,
+    issues: EventIssues | None = None,
 ) -> None:
-    """Log Iglu validation outcomes without changing ingest behavior."""
+    """Log Iglu validation outcomes and record data errors on the event.
+
+    Only data that failed its schema goes into ``extra.validation``; a schema
+    the collector cannot load is a deployment matter and stays in the log.
+    """
+
+    if issues is not None and validation.invalid_data and validation.error is not None:
+        issues.add(validation_stage, validation.error, schema=schema_uri)
 
     schema_path = str(validation.schema_path) if validation.schema_path else None
 
@@ -299,16 +329,16 @@ def _h_page_data(model: InsertModel, data: dict[str, Any]) -> None:
 
 
 def _h_mobile_context(model: InsertModel, data: dict[str, Any]) -> None:
-    device_brand = data.pop("deviceManufacturer", None)
+    device_brand = _as_str(data.pop("deviceManufacturer", None))
     if device_brand is not None:
         model.device_brand = device_brand
-    device_model = data.pop("deviceModel", None)
+    device_model = _as_str(data.pop("deviceModel", None))
     if device_model is not None:
         model.device_model = device_model
-    os_family = data.pop("osType", None)
+    os_family = _as_str(data.pop("osType", None))
     if os_family is not None:
         model.os_family = os_family
-    os_version = data.pop("osVersion", None)
+    os_version = _as_str(data.pop("osVersion", None))
     if os_version is not None:
         model.os_version_string = os_version
     model.device_is_mobile = True
@@ -323,28 +353,30 @@ def _h_mobile_application(model: InsertModel, data: dict[str, Any]) -> None:
 
 
 def _h_client_session(model: InsertModel, data: dict[str, Any]) -> None:
-    visit_count = data.pop("sessionIndex", 0)
+    visit_count = _as_uint(data.pop("sessionIndex", 0))
     if visit_count:
         model.vid = visit_count
-    if data.get("sessionId"):
-        model.sid = _safe_uuid(data.pop("sessionId"))
-    if data.get("userId"):
-        model.duid = _safe_uuid(data.pop("userId"))
-    model.event_index = data.pop("eventIndex", 0)
+    # The nil UUID is an anonymised id (userAnonymisation): it must not
+    # replace a real id, nor become one, so it counts as absent.
+    if data.get("sessionId") and (session_id := _optional_uuid(data.pop("sessionId"))):
+        model.sid = session_id
+    if data.get("userId") and (user_id := _optional_uuid(data.pop("userId"))):
+        model.duid = user_id
+    model.event_index = _as_uint(data.pop("eventIndex", 0)) or 0
     first_event_time = data.pop("firstEventTimestamp", None)
     if first_event_time is not None:
         model.first_event_time = _safe_datetime(first_event_time)
     previous_session_id = data.pop("previousSessionId", None)
     if previous_session_id:
-        model.previous_session_id = _safe_uuid(previous_session_id)
+        model.previous_session_id = _optional_uuid(previous_session_id) or DEFAULT_UUID
     first_event_id = data.pop("firstEventId", None)
     if first_event_id:
         model.first_event_id = _safe_uuid(first_event_id)
-    model.storage_mechanism = data.pop("storageMechanism", "")
+    model.storage_mechanism = _as_str(data.pop("storageMechanism", "")) or ""
 
 
 def _h_mobile_screen(model: InsertModel, data: dict[str, Any]) -> None:
-    name = data.pop("name", None)
+    name = _as_str(data.pop("name", None))
     if name is not None:
         model.url = name
     screen_id = data.pop("id", None)
@@ -419,13 +451,19 @@ CONTEXT_HANDLERS: dict[str, ContextHandler] = {
 async def parse_contexts(
     contexts: dict[str, Any] | None,
     model: InsertModel,
+    issues: EventIssues | None = None,
 ) -> InsertModel:
     """
     Parse Snowplow contexts.
 
+    Entities with a handler fill their columns; every other entity, and every
+    repeat of a handled schema, is kept in ``extra.contexts`` through
+    ``issues`` (see ``evnt.tracker.entities``).
+
     Args:
         contexts: The contexts dictionary
         model: The InsertModel to update
+        issues: Where malformed contexts of a stored event are recorded
 
     Returns:
         Processed InsertModel with updated fields
@@ -434,9 +472,19 @@ async def parse_contexts(
     if not contexts or "data" not in contexts:
         return model
 
-    for context in contexts["data"]:
+    entities = contexts["data"]
+    if not isinstance(entities, list):
+        _warn_malformed("Contexts data is not a list", value_type=type(entities).__name__)
+        if issues is not None:
+            issues.add("contexts", "contexts data is not a list")
+        return model
+
+    handled: set[str] = set()
+    for context in entities:
         if not isinstance(context, dict):
             _warn_malformed("Context is not a dict", context=context)
+            if issues is not None:
+                issues.add("contexts", "context entity is not an object")
             continue
 
         missing_keys = [k for k in ("schema", "data") if k not in context]
@@ -446,53 +494,84 @@ async def parse_contexts(
                 missing=missing_keys,
                 context=context,
             )
+            if issues is not None:
+                issues.add("contexts", f"context entity has no {' or '.join(missing_keys)}")
             continue
 
         schema_uri = context["schema"]
         data = context["data"]
+
+        if not isinstance(schema_uri, str):
+            _warn_malformed("Wrong schema type", context=context)
+            if issues is not None:
+                issues.add("contexts", "context schema is not a string")
+            continue
 
         validation = validate_iglu_payload(schema_uri, data)
         _log_validation_result(
             validation,
             schema_uri=schema_uri,
             validation_stage="contexts",
+            issues=issues,
         )
 
-        if not isinstance(schema_uri, str):
-            _warn_malformed("Wrong schema type", context=context)
-            continue
-
         schema = _schema_name_from_uri(schema_uri)
+        handler = CONTEXT_HANDLERS.get(schema)
 
         if not isinstance(data, dict):
-            _warn_malformed("Wrong data type", context=context)
+            # Kept whatever the schema: no handler can consume it.
+            _warn_malformed("Wrong data type", schema=schema_uri, value_type=type(data).__name__)
+            if issues is not None:
+                if not validation.invalid_data:
+                    issues.add("contexts", "context data is not an object", schema=schema_uri)
+                issues.keep_entity(schema_uri, data)
             continue
 
-        handler = CONTEXT_HANDLERS.get(schema)
         if handler is None:
-            if (permit := _NO_PARSER_LOG.take(schema_uri)) is not None:
-                _log_evicted(permit, "Schema has no parser", "schema_uri")
-                logger.warning(
-                    "Schema has no parser",
-                    **permit.log_fields(),
-                    schema=schema,
-                    schema_uri=schema_uri,
-                )
+            # Kept in extra.contexts. Not logged: this used to be a warning
+            # per entity and was the main source of log noise.
+            if issues is not None:
+                issues.keep_entity(schema_uri, data)
             continue
 
+        if schema in handled:
+            # The handlers merge or overwrite a repeated schema, which keeps
+            # only one entity's values in the columns. They still run, so the
+            # columns get what they always got, and the repeat is kept whole,
+            # encoded before the handler pops fields out of it.
+            if issues is not None:
+                issues.keep_entity(schema_uri, data)
+        else:
+            handled.add(schema)
+        if handler is _h_static:
+            # The only handler that merges tracker keys into extra itself; a
+            # kept repeat above is stored whole, as JSON text it cannot spoof.
+            data = without_collector_keys(data, schema_uri, issues)
         handler(model, data)
 
+    if issues is not None:
+        issues.note_dropped_entities()
     return model
 
 
 @async_capture_span()
-async def parse_event(event: dict[str, Any] | None, model: InsertModel) -> InsertModel:
+async def parse_event(
+    event: dict[str, Any] | None,
+    model: InsertModel,
+    issues: EventIssues | None = None,
+) -> InsertModel:
     """
     Parse Snowplow event data.
+
+    A self-describing event that is not shaped as one (no schema, a schema
+    that is not an Iglu URI, data that is not what its schema needs) leaves
+    the event without its ``ue`` data and records why in ``issues``, so the
+    event itself is still stored.
 
     Args:
         event: The event dictionary
         model: The InsertModel to update
+        issues: Where problems of a stored event are recorded
 
     Returns:
         Processed InsertModel with updated fields
@@ -501,69 +580,68 @@ async def parse_event(event: dict[str, Any] | None, model: InsertModel) -> Inser
     if event is None or "data" not in event:
         return model
 
-    event_payload: dict[str, Any] = event["data"]
-    schema_uri = event_payload.get("schema", "")
-    validation = validate_iglu_payload(schema_uri, event_payload.get("data"))
+    event_payload = event["data"]
+    if not isinstance(event_payload, dict):
+        _malformed_event(issues, "unstructured event data is not an object")
+        return model
+    schema_uri = event_payload.get("schema")
+    if not isinstance(schema_uri, str):
+        _malformed_event(issues, "unstructured event has no schema")
+        return model
+    data = event_payload.get("data")
+    validation = validate_iglu_payload(schema_uri, data)
     _log_validation_result(
         validation,
         schema_uri=schema_uri,
         validation_stage="event",
+        issues=issues,
     )
 
-    if event_payload["schema"] == schemas.u2s_data:
-        se = StructuredEvent.model_validate(event_payload["data"])
+    if schema_uri == schemas.u2s_data:
+        try:
+            se = StructuredEvent.model_validate(data)
+        except ValidationError as exc:
+            _malformed_event(issues, f"structured event data is invalid: {exc.errors()[0]['msg']}")
+            return model
         for field_name in StructuredEvent.model_fields:
             setattr(model, field_name, getattr(se, field_name))
         model.e = "se"
-    else:
-        event_name = event_payload["schema"].split("/")[-3]
-        model.ue[event_name] = event_payload["data"]
+        return model
+
+    # iglu:vendor/name/format/version: the name is the third segment from the end.
+    segments = schema_uri.split("/")
+    if len(segments) < _IGLU_URI_SEGMENTS or not segments[-3]:
+        _malformed_event(issues, "unstructured event schema is not an Iglu URI", schema_uri)
+        return model
+    model.ue[segments[-3]] = data
     return model
 
 
-def _build_initial_model(
-    element: PayloadElementModel,
-    user_agent: UserAgentModel | dict[str, Any],
-    ip: IPv4Address,
-) -> InsertModel:
-    """Merge payload + UA + IP into a fresh InsertModel.
-
-    ``user_agent`` is a model or just its field values as a dict (what the
-    ingest path passes, to skip building a model per request).
-    """
-
-    # model_construct skips validation, so document the invariant the caller
-    # must uphold: ``ip`` is an already-validated IPv4Address.
-    assert isinstance(ip, IPv4Address)
-
-    data = _INSERT_MODEL_DEFAULTS.copy()
-    for field_name in _MUTABLE_INSERT_DEFAULT_FIELDS:
-        data[field_name] = copy(data[field_name])
-
-    data.update(user_agent if type(user_agent) is dict else user_agent.__dict__)
-    for field_name in _MUTABLE_USER_AGENT_FIELDS:
-        data[field_name] = copy(data[field_name])
-    data.update(element.__dict__)
-    data["user_ip"] = ip
-    return InsertModel.model_construct(**data)
+_IGLU_URI_SEGMENTS = 4
 
 
-def dump_insert_model(model: InsertModel) -> dict[str, Any]:
-    """Return a ClickHouse row dict without running Pydantic serialization."""
-
-    return model.__dict__.copy()
+def _malformed_event(issues: EventIssues | None, error: str, schema: str | None = None) -> None:
+    _warn_malformed("Malformed unstructured event", error=error)
+    if issues is not None:
+        issues.add("event", error, schema=schema)
 
 
 def _apply_amp_fields(result: InsertModel) -> None:
     """Promote AMP-specific fields from `result.amp` onto top-level fields."""
 
-    if "uid" in result.amp:
-        result.uid = result.amp.pop("userId")
+    # The ``uid`` test is kept as it was (it gates on a key the AMP contexts do
+    # not send); only the KeyError on a missing ``userId`` and a non-string
+    # value reaching the String column are fixed here.
+    if "uid" in result.amp and (user_id := _as_str(result.amp.get("userId"))) is not None:
+        del result.amp["userId"]
+        result.uid = user_id
     if result.e == "ue" and "amp_page_ping" in result.ue:
         result.e = "pp"
         result.ue["amp_page_ping"] = result.ue.pop("amp_page_ping")
     if result.amp.get("domainUserid"):
-        result.duid = _safe_uuid(result.amp.pop("domainUserid"))
+        domain_userid = _optional_uuid(result.amp.pop("domainUserid"))
+        if domain_userid is not None:
+            result.duid = domain_userid
 
 
 def _apply_amp_linker(result: InsertModel) -> None:
@@ -573,7 +651,11 @@ def _apply_amp_linker(result: InsertModel) -> None:
     if not result.url or "sp_amp_linker" not in result.url:
         return
 
-    parsed_url = urlparse.urlparse(result.url)
+    try:
+        parsed_url = urlparse.urlparse(result.url)
+    except ValueError as e:  # e.g. an unterminated IPv6 host: "http://[::1"
+        _warn_malformed("Failed to parse URL for AMP linker", error=str(e))
+        return
     query_string = urlparse.parse_qs(parsed_url.query)
     if not query_string.get("sp_amp_linker"):
         return
@@ -594,76 +676,73 @@ def _apply_cookie_duid(result: InsertModel, cookies: str | None) -> None:
         return
     sp_cookies = parse_cookies(cookies)
     if sp_cookies and "device_id" in sp_cookies:
-        result.duid = _safe_uuid(sp_cookies["device_id"])
+        result.duid = _optional_uuid(sp_cookies["device_id"])
 
 
 def _apply_screen_view(result: InsertModel) -> None:
-    """Flatten a mobile ``screen_view`` unstructured event into a page view."""
+    """Flatten a mobile ``screen_view`` unstructured event into a page view.
 
-    if "screen_view" in result.ue:
+    Mobile dashboards read the screen name from ``url``, so it replaces the
+    URL the tracker sent; ``parse_payload`` keeps that original in
+    ``extra.tracker``. A screen view missing ``id`` or ``name`` keeps the
+    view id and URL it already had rather than failing the event.
+    """
+
+    screen_view = result.ue.get("screen_view")
+    if isinstance(screen_view, dict):
         result.e = "pv"
-        result.view_id = _safe_uuid(result.ue["screen_view"].pop("id"))
-        result.url = result.ue["screen_view"].pop("name")
+        screen_id = screen_view.pop("id", None)
+        if screen_id is not None:
+            result.view_id = _safe_uuid(screen_id)
+        name = _as_str(screen_view.pop("name", None))
+        if name is not None:
+            result.url = name
 
-        if "previousName" in result.ue["screen_view"]:
-            result.refr = result.ue["screen_view"].pop("previousName")
-            if result.refr == "Unknown":
-                result.refr = ""
-        else:
-            result.refr = ""
+        previous_name = _as_str(screen_view.pop("previousName", None))
+        result.refr = "" if previous_name in (None, "Unknown") else previous_name
 
         result.screen.update(result.ue.pop("screen_view"))
 
     # A mobile screen context can also supply the URL directly.
     if "screen_name" in result.screen:
-        result.url = result.screen.pop("screen_name")
-
-
-def _normalize_se_property(result: InsertModel) -> None:
-    """Force ``result.se_pr`` to a dict, wrapping non-JSON strings."""
-
-    if not (result.se_pr and isinstance(result.se_pr, str)):
-        result.se_pr = {}
-        return
-
-    try:
-        result.se_pr = orjson.loads(result.se_pr)
-    except _SE_PR_JSON_ERRORS:
-        result.se_pr = {"ex-property": result.se_pr}
-
-    if not isinstance(result.se_pr, dict):
-        result.se_pr = {"ex-property": result.se_pr}
-
-
-def _normalize_se_value(result: InsertModel) -> None:
-    """Force ``result.se_va`` to a float, stashing non-numeric originals.
-
-    Assumes ``_normalize_se_property`` ran first so ``result.se_pr`` is a dict.
-    """
-
-    if not result.se_va:
-        result.se_va = 0.0
-        return
-
-    if isinstance(result.se_va, (float, int)):
-        return
-
-    try:
-        result.se_va = float(result.se_va)
-    except ValueError:
-        if isinstance(result.se_pr, dict):
-            result.se_pr["ex-value"] = result.se_va
-        result.se_va = 0.0
+        screen_name = _as_str(result.screen.pop("screen_name"))
+        if screen_name is not None:
+            result.url = screen_name
 
 
 def _apply_client_hints_device(result: InsertModel) -> None:
     """Derive ``device_is_mobile`` / ``device_is_pc`` from UA client hints."""
 
-    is_mobile = result.extra.get("client_hints", {}).get("isMobile")
+    client_hints = result.extra.get("client_hints")
+    if not isinstance(client_hints, dict):
+        return
+    is_mobile = client_hints.get("isMobile")
     if is_mobile is None:
         return
-    result.device_is_mobile = bool(int(is_mobile))
+    try:
+        result.device_is_mobile = bool(int(is_mobile))
+    except _CLIENT_HINT_ERRORS:
+        _warn_malformed("Client hint isMobile is not a number", value_type=type(is_mobile).__name__)
+        return
     result.device_is_pc = bool(int(not is_mobile))
+
+
+def _record_undecodable(
+    issues: EventIssues, plain_field: str, plain: str | None, encoded: str | None
+) -> None:
+    """Note a ``co``/``cx`` or ``ue_pr``/``ue_px`` value that decoded to nothing.
+
+    Called only when decoding returned ``None``; the plain field wins when
+    both are sent, as in ``find_available``.
+    """
+
+    if plain:
+        issues.add("payload", "not a JSON object", field=plain_field)
+    elif encoded:
+        issues.add("payload", "not base64 of a JSON object", field=_ENCODED_FIELD[plain_field])
+
+
+_ENCODED_FIELD = {"co": "cx", "ue_pr": "ue_px"}
 
 
 @async_capture_span()
@@ -672,12 +751,28 @@ async def parse_payload(
     user_agent: UserAgentModel | dict[str, Any],
     ip: IPv4Address,
     cookies: str | None,
+    issues: EventIssues | None = None,
 ) -> InsertModel:
-    """Parse a Snowplow event payload into an ``InsertModel``."""
+    """Parse a Snowplow event payload into an ``InsertModel``.
 
-    result = _build_initial_model(element, user_agent, ip)
-    result = await parse_contexts(element.contexts, result)
-    result = await parse_event(element.ue_context, result)
+    ``issues`` collects ``extra.validation`` / ``extra.tracker`` entries; the
+    caller applies them to the row (``EventIssues.apply``).
+    """
+
+    if issues is None:
+        issues = EventIssues()
+    result = build_initial_model(element, user_agent, ip)
+    apply_platform(result, issues)
+    apply_true_timestamp(element, result, issues)
+
+    contexts = element.contexts
+    if contexts is None:
+        _record_undecodable(issues, "co", element.co, element.cx)
+    result = await parse_contexts(contexts, result, issues)
+    ue_context = element.ue_context
+    if ue_context is None:
+        _record_undecodable(issues, "ue_pr", element.ue_pr, element.ue_px)
+    result = await parse_event(ue_context, result, issues)
 
     if element.ping_context:
         result.ue["page_ping"] = element.ping_context
@@ -686,8 +781,9 @@ async def parse_payload(
     _apply_amp_linker(result)
     _apply_cookie_duid(result, cookies)
     _apply_screen_view(result)
-    _normalize_se_property(result)
-    _normalize_se_value(result)
+    normalize_se_property(result)
+    normalize_se_value(result)
     _apply_client_hints_device(result)
+    keep_replaced_urls(element, result, issues)
 
     return result

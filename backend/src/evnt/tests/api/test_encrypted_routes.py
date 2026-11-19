@@ -211,21 +211,44 @@ class TestRejections:
         assert response.json()["detail"] == REJECTION_DETAIL
         assert connector.inserted_batches == []
 
-    def test_schema_invalid_plaintext_is_rejected(self, client, connector, public_key):
-        """A valid seal over a payload the tracker model refuses still 400s.
+    @pytest.mark.parametrize(
+        "document",
+        [{"schema": "x"}, {"data": "not a list"}, [{"e": "pv"}], "text", 42],
+    )
+    def test_plaintext_that_is_not_a_payload_is_rejected(
+        self, client, connector, public_key, document
+    ):
+        """A valid seal over something that is not a Snowplow payload still 400s.
 
         The plaintext endpoint answers 422 here, but leaking the distinction
         would tell a prober that their key and tag were correct.
         """
         with client:
-            response = client.post(
-                ENDPOINT,
-                content=_seal(public_key, {"data": [{"aid": "example-app"}]}),
-            )
+            response = client.post(ENDPOINT, content=_seal(public_key, document))
 
         assert response.status_code == HTTP_BAD_REQUEST
         assert response.json()["detail"] == REJECTION_DETAIL
         assert connector.inserted_batches == []
+
+    def test_bad_event_in_a_sealed_batch_is_handled_per_event(self, client, connector, public_key):
+        """A sealed batch is handled like a plaintext POST once it is open.
+
+        The event without ``e`` cannot be built and is dropped; the one with a
+        malformed ``duid`` is stored with the problem in ``extra.validation``.
+        The tracker gets the normal success, so it does not drop or resend
+        the batch.
+        """
+        payload = minimal_tp2_payload()
+        payload["data"] += [{"aid": "example-app"}, dict(payload["data"][0], duid="legacy")]
+        with client:
+            response = client.post(ENDPOINT, content=_seal(public_key, payload))
+
+        assert response.status_code == HTTP_NO_CONTENT
+        rows = connector.inserted_batches[0]
+        assert len(rows) == 2
+        assert "validation" not in rows[0]["extra"]
+        assert rows[1]["duid"] is None
+        assert rows[1]["extra"]["validation"][0]["field"] == "duid"
 
     def test_oversized_body_is_refused_from_content_length(
         self,

@@ -74,6 +74,14 @@ MAX_ENCRYPTED_AMPLIFICATION: Final[int] = 16
 # A key file holds a PEM or a base64 scalar; anything larger is a wrong path.
 MAX_KEY_FILE_BYTES: Final[int] = 64 * 1024
 
+# Snowplow trackers send `SP-Anonymous: *` when server-side anonymisation is on.
+# Off by default: honouring it drops the client IP, country and location of
+# those requests, which changes what existing dashboards see.
+DEFAULT_HONOR_SP_ANONYMOUS: Final[bool] = False
+# Cloudflare's "Add visitor location headers" managed transform (cf-ipcity and
+# friends) is read into `extra.collector.geo` only when explicitly enabled.
+DEFAULT_CLOUDFLARE_GEO_HEADERS: Final[bool] = False
+
 # Ceiling on any request body. Generous enough that no real tracker batch
 # comes close, while keeping one caller from making a worker buffer and
 # parse an unbounded payload.
