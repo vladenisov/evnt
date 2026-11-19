@@ -14,8 +14,9 @@ dependencies = [
     "fastapi>=0.143.0",
     "fastapi-structlog>=0.7.1",
     "fire>=0.7.1",
+    "httptools>=0.7",
     "httpx>=0.28.1",
-    "jsonschema>=4.26.0",
+    "jsonschema-rs>=0.61.2",
     "orjson>=3.13.0",
     "prometheus-fastapi-instrumentator>=8.1.0",
     "pydantic>=2.14.0",
@@ -25,6 +26,7 @@ dependencies = [
     "structlog>=25.5.0",
     "ua-parser[regex]>=1.0.2",
     "uvicorn>=0.54.0",
+    "uvloop>=0.22 ; sys_platform != 'win32'",
 ]
 
 [project.optional-dependencies]
@@ -87,7 +89,7 @@ plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 # No type information shipped.
-module = ["brotli_asgi.*", "clickhouse_connect.*", "crawlerdetect.*", "elasticapm.*", "fire.*", "jsonschema.*"]
+module = ["brotli_asgi.*", "clickhouse_connect.*", "crawlerdetect.*", "elasticapm.*", "fire.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

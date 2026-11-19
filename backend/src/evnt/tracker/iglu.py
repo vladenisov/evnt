@@ -10,8 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-from jsonschema import Draft4Validator
-from jsonschema.exceptions import SchemaError, ValidationError
+from jsonschema_rs import Draft4Validator, ValidationError
 
 from evnt.config import settings
 
@@ -60,7 +59,7 @@ def _format_validation_error(error: ValidationError) -> str:
     """Format a jsonschema validation error with a stable payload path."""
 
     location = "$"
-    for part in error.absolute_path:
+    for part in error.instance_path:
         location += f"[{part}]" if isinstance(part, int) else f".{part}"
 
     if location == "$":
@@ -74,18 +73,27 @@ def resolve_iglu_schema_path(schema_uri: str) -> Path | None:
     if not isinstance(schema_uri, str):
         return None
 
+    relative_path = _relative_schema_path(schema_uri)
+    if relative_path is None:
+        return None
+    return IGLU_SCHEMAS_DIR / relative_path
+
+
+@lru_cache(maxsize=1024)
+def _relative_schema_path(schema_uri: str) -> Path | None:
+    """Parse an Iglu URI once; this runs for every context of every event."""
+
     match = IGLU_URI_RE.fullmatch(schema_uri)
     if match is None:
         return None
     if match.group("format") != "jsonschema":
         return None
 
-    return (
-        IGLU_SCHEMAS_DIR
-        / match.group("vendor")
-        / match.group("name")
-        / "jsonschema"
-        / match.group("version")
+    return Path(
+        match.group("vendor"),
+        match.group("name"),
+        "jsonschema",
+        match.group("version"),
     )
 
 
@@ -102,14 +110,16 @@ def _load_validator(schema_uri: str) -> tuple[Draft4Validator, Path]:
     with schema_path.open("r", encoding="utf-8") as schema_file:
         schema = json.load(schema_file)
 
-    Draft4Validator.check_schema(schema)
-    return Draft4Validator(schema), schema_path
+    # The constructor also checks the schema against the Draft 4 meta-schema.
+    # ``format`` stays an annotation, as it was with the previous validator.
+    return Draft4Validator(schema, validate_formats=False), schema_path
 
 
 def clear_iglu_caches() -> None:
     """Reset cached validators for tests."""
 
     _load_validator.cache_clear()
+    _relative_schema_path.cache_clear()
 
 
 def prepare_iglu_schema(schema_uri: str) -> ValidationResult:
@@ -130,7 +140,10 @@ def prepare_iglu_schema(schema_uri: str) -> ValidationResult:
     except OSError as exc:
         error = f"schema file read failed: {exc}"
         warning_path = schema_path
-    except (SchemaError, ValueError) as exc:
+    except ValidationError as exc:
+        error = f"schema compilation failed: {exc.message}"
+        warning_path = schema_path
+    except ValueError as exc:
         error = f"schema compilation failed: {exc}"
         warning_path = schema_path
     else:
