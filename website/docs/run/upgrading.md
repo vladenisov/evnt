@@ -80,3 +80,75 @@ HTTP connections per process. It no longer sizes a urllib3 pool used by an execu
 The packaged timezone data supports minimal images without system timezone files.
 Collector URLs, environment variable names, and ClickHouse column definitions
 remain unchanged. UTC timestamps retain millisecond precision.
+
+## Per-event validation
+
+A bad event no longer fails its whole request. Before, one invalid element made
+`/tracker` answer `422` for the entire batch (which the trackers then dropped
+without retry), a pixel with an invalid parameter got `422`, a sealed batch
+with an invalid event got `400`, and an event that crashed parsing (for
+example a `screen_view` without `id`) turned the batch into a `500` that the
+trackers resent forever. Now:
+
+- Events are validated one at a time. An event with invalid or missing fields
+  that can still be built is stored with field defaults and the problems listed
+  in `extra.validation`; an event that cannot be built (not an object, no valid
+  `e`) is dropped, logged and counted in `evnt_events_dropped_total`. The
+  request gets its normal success response.
+- `/tracker` still answers `422` to a body that is not a Snowplow payload, which
+  now includes a JSON object without a `data` list (it was accepted as an empty
+  batch). `/i` always answers with the pixel unless storage fails.
+- `aid` and `res` are optional, `p=headset` is accepted (stored as `mob`), and
+  `ttm` is read. A nil UUID no longer becomes a device or session id, and a
+  malformed `userId`/`sessionId` in `client_session` no longer replaces the
+  event's `duid`/`sid` with the zero UUID.
+
+No column changes: everything new goes into the existing `extra` JSON column
+(`extra.validation`, `extra.tracker`), and the RabbitMQ message layout is
+unchanged, so messages queued by the previous version are processed as before.
+See [responses and bad events](../integrate/http-api.md#responses-and-bad-events)
+and [tracker compatibility](../integrate/trackers.md#tracker-compatibility).
+
+## Context entities, tracker overrides and event fingerprint
+
+- Context entities the collector has no column mapping for used to be dropped
+  with a `Schema has no parser` warning (rate-limited, but the largest source
+  of log lines). They are now kept in `extra.contexts`, and so are the second
+  and later occurrences of a mapped schema on one event, which the columns
+  merge or overwrite. The warning is gone. What goes into the existing columns
+  is unchanged.
+- `ua` is parsed instead of the `User-Agent` header when sent, so events with
+  it now store that agent in `user_agent` and the parsed fields. `ip` replaces
+  `user_ip` for `p=srv` events. Both, and `tnuid`, are kept in `extra.tracker`.
+- Every event gets `extra.event_fingerprint` for finding resent copies.
+- A `com.acme/static_context` key named `validation`, `tracker`, `contexts`,
+  `event_fingerprint` or `collector`, or starting with one of them followed by
+  a dot, is no longer merged into `extra`: those paths now belong to the
+  collector. The dropped keys are named in `extra.validation`. Rename such keys
+  in the tracker configuration if you relied on them.
+
+No column changes, and the RabbitMQ message layout is unchanged: the new keys
+are inside the existing `extra` JSON column, so messages queued by the previous
+version are processed as before. See
+[tracker compatibility](../integrate/trackers.md#tracker-compatibility) and
+[context entities](../integrate/trackers.md#context-entities).
+
+## Visitor location and `SP-Anonymous`
+
+Two opt-in settings, both off by default, so nothing changes until they are set:
+
+- `EVNT_COMMON__SNOWPLOW__CLOUDFLARE_GEO_HEADERS=true` stores Cloudflare's
+  visitor location headers (city, region, coordinates, postal code, time zone
+  and more) in `extra.collector.geo`. Turn on **Add visitor location headers**
+  in Cloudflare's Managed Transforms first; proxy trust must be on.
+- `EVNT_COMMON__SNOWPLOW__HONOR_SP_ANONYMOUS=true` makes requests with the
+  trackers' `SP-Anonymous` header store no IP address (`user_ip` is `0.0.0.0`,
+  the `ip` parameter is ignored), no country or location and no `_sp_id`
+  cookie device id; their `extra.collector` is `{"anonymous": true}`. Rows
+  from such requests have no `extra.collector.client_ip` or `ip_country`, so
+  queries reading those paths see `NULL` rather than an empty string for them.
+
+No column changes; the new keys are inside the existing `extra` JSON column and
+the RabbitMQ message layout is unchanged. See
+[visitor location](../configure/settings.md#visitor-location-cloudflare) and
+[server anonymisation](../configure/settings.md#server-anonymisation-sp-anonymous).

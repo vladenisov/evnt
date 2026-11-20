@@ -74,7 +74,11 @@ def find_available(
     if unencoded:
         result = unencoded
     elif encoded:
-        result = parse_base64(encoded)
+        try:
+            result = parse_base64(encoded)
+        except ValueError as exc:  # binascii.Error and UnicodeDecodeError included
+            _warn_malformed("Failed to decode Snowplow base64 payload", error=str(exc)[:200])
+            return None
 
     if result is None:
         return None

@@ -51,3 +51,14 @@ def test_country_header_rejects_empty_configuration(monkeypatch):
     monkeypatch.setenv("EVNT_COMMON__SNOWPLOW__USER_COUNTRY_HEADER", "  ")
     with pytest.raises(ValueError, match="user_country_header"):
         Settings()
+
+
+def test_geo_and_anonymity_settings_are_off_by_default_and_overridable(monkeypatch):
+    snowplow = Settings().common.snowplow
+    assert snowplow.cloudflare_geo_headers is False
+    assert snowplow.honor_sp_anonymous is False
+    monkeypatch.setenv("EVNT_COMMON__SNOWPLOW__CLOUDFLARE_GEO_HEADERS", "true")
+    monkeypatch.setenv("EVNT_COMMON__SNOWPLOW__HONOR_SP_ANONYMOUS", "true")
+    snowplow = Settings().common.snowplow
+    assert snowplow.cloudflare_geo_headers is True
+    assert snowplow.honor_sp_anonymous is True

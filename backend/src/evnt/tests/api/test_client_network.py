@@ -6,7 +6,7 @@ import pytest
 from fastapi import Request
 from fastapi.testclient import TestClient
 
-from evnt.api.deps import get_client_country
+from evnt.api.deps import _client_country
 from evnt.config import settings
 from evnt.tests.support import build_app, minimal_tp2_payload
 
@@ -153,7 +153,7 @@ async def test_country_header_rejects_non_ascii_before_uppercasing(
     # scope directly to reproduce the raw byte a real server passes through.
     _configure(monkeypatch)
     request = Request({"type": "http", "headers": [(b"cf-ipcountry", raw_value)]})
-    assert await get_client_country(request) == expected
+    assert _client_country(request) == expected
 
 
 @pytest.mark.parametrize("country_header", [None, "CF-IPCountry"])

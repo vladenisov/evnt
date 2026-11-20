@@ -8,7 +8,7 @@ roughly 75 MB per worker process with the default 32768-entry cache. A fresh
 ``UserAgentModel`` is assembled from the record on every lookup, so callers
 own what they receive and may mutate it.
 
-The ingest path never needs the model: ``payload._build_initial_model`` only
+The ingest path never needs the model: ``rows.build_initial_model`` only
 copies the agent's fields into the row, so ``process_data`` asks for them as a
 plain dict (``agent_fields_for_insert_async``) and skips the model object.
 """
@@ -281,6 +281,17 @@ async def agent_fields_for_insert_async(string: str | None) -> dict[str, Any]:
     if data is None:
         data = await run_cpu_task(_parse_record_cached, normalized)
     return _to_fields(normalized, data)
+
+
+def cached_agent_fields(string: str) -> dict[str, Any] | None:
+    """Return the agent's row fields only if the LRU already holds its parse.
+
+    Never parses and never inserts, so a caller that must not spend parser
+    time or evict entries other traffic relies on can still use a known value.
+    """
+
+    data = _get_cached_agent(string)
+    return None if data is None else _to_fields(string, data)
 
 
 def warm_user_agent_parser() -> None:

@@ -8,15 +8,18 @@ shared row model, and delivers those rows to ClickHouse.
 
 1. The middleware applies host/HTTPS rules, CORS, request body limits,
    correlation IDs, logging, and response security headers.
-2. `/tracker` binds a batch from JSON; `/i` binds one event from query
-   parameters. `/e` unseals the same payload model when encryption is enabled.
-3. Shared processing extracts IP and User-Agent data, parses contexts and
+2. `/tracker` binds a batch envelope from JSON; `/i` reads one event from query
+   parameters. `/e` unseals the same envelope when encryption is enabled.
+3. Shared processing validates every event on its own, so a bad event costs
+   only itself, extracts IP and User-Agent data, parses contexts and
    unstructured events, and validates known Iglu schemas.
 4. The active row sink writes directly to ClickHouse or publishes to RabbitMQ.
 
 Schema validation is best-effort: a warning or an unknown schema does not make
-an otherwise valid tracker request fail. The image requires the Iglu submodule
-so known schemas are not silently missing.
+an otherwise valid tracker request fail. Data that fails a known schema is
+listed in the event's `extra.validation`. Entities without a column mapping
+are kept in `extra.contexts`. The image requires the Iglu submodule so known
+schemas are not silently missing.
 
 ## Ingest modes
 

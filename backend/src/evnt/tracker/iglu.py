@@ -20,6 +20,10 @@ IGLU_URI_RE = re.compile(
     r"(?P<format>[A-Za-z0-9-_]+)/"
     r"(?P<version>[0-9]+-[0-9]+-[0-9]+)$",
 )
+# Real schema URIs are well under 100 characters. Longer ones are tracker
+# input that is not an Iglu URI, and they are rejected before reaching the
+# caches below, which would otherwise pin up to 1024 arbitrarily large strings.
+MAX_IGLU_URI_CHARS = 256
 IGLU_SCHEMAS_DIR: Path = settings.common.snowplow.iglu_schemas_dir
 KNOWN_IGLU_SCHEMA_URIS = (
     "iglu:org.w3/PerformanceTiming/jsonschema/1-0-0",
@@ -53,6 +57,9 @@ class ValidationResult:
     status: Literal["ok", "skipped", "warning"]
     schema_path: Path | None = None
     error: str | None = None
+    invalid_data: bool = False
+    """The schema loaded and the data failed it, as opposed to a schema the
+    collector could not load: only this is a problem of the event itself."""
 
 
 def _format_validation_error(error: ValidationError) -> str:
@@ -70,7 +77,7 @@ def _format_validation_error(error: ValidationError) -> str:
 def resolve_iglu_schema_path(schema_uri: str) -> Path | None:
     """Translate a full Iglu URI into a local schema path."""
 
-    if not isinstance(schema_uri, str):
+    if not isinstance(schema_uri, str) or len(schema_uri) > MAX_IGLU_URI_CHARS:
         return None
 
     relative_path = _relative_schema_path(schema_uri)
@@ -97,6 +104,28 @@ def _relative_schema_path(schema_uri: str) -> Path | None:
     )
 
 
+def schema_key(schema_uri: str) -> tuple[str, str] | None:
+    """Split an Iglu URI into its ``vendor/name`` key and its version.
+
+    ``None`` for anything that is not ``iglu:vendor/name/format/M-R-A``. Any
+    format is accepted: only the key and the version are needed here.
+    """
+
+    if len(schema_uri) > MAX_IGLU_URI_CHARS:
+        return None
+    return _schema_key(schema_uri)
+
+
+@lru_cache(maxsize=1024)
+def _schema_key(schema_uri: str) -> tuple[str, str] | None:
+    # Cached: an event carries several entities, and the same handful of
+    # schemas repeats across every event.
+    match = IGLU_URI_RE.fullmatch(schema_uri)
+    if match is None:
+        return None
+    return f"{match.group('vendor')}/{match.group('name')}", match.group("version")
+
+
 @lru_cache(maxsize=256)
 def _load_validator(schema_uri: str) -> tuple[Draft4Validator, Path]:
     """Load and compile a validator for a schema URI."""
@@ -120,6 +149,7 @@ def clear_iglu_caches() -> None:
 
     _load_validator.cache_clear()
     _relative_schema_path.cache_clear()
+    _schema_key.cache_clear()
 
 
 def prepare_iglu_schema(schema_uri: str) -> ValidationResult:
@@ -187,4 +217,5 @@ def validate_iglu_payload(schema_uri: str, data: Any) -> ValidationResult:
         status="warning",
         schema_path=warning_path,
         error=error,
+        invalid_data=True,
     )

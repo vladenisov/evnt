@@ -202,6 +202,66 @@ def test_client_network_json_roundtrip_keeps_ipv4_schema(
     assert row == ("IPv4", legacy_ip, client_ip, "CN")
 
 
+def test_geo_and_anonymous_collector_keys_roundtrip(tables, ch, database, monkeypatch):
+    """Geo floats and the anonymous flag land beside rows that have neither."""
+    from evnt.main import create_app
+
+    monkeypatch.setattr(settings.security, "trust_proxy_headers", True)
+    monkeypatch.setattr(
+        settings.common,
+        "snowplow",
+        settings.common.snowplow.model_copy(
+            update={
+                "user_ip_header": "CF-Connecting-IP",
+                "user_country_header": "CF-IPCountry",
+                "cloudflare_geo_headers": True,
+                "honor_sp_anonymous": True,
+            }
+        ),
+    )
+    located_app = f"it-geo-{uuid.uuid4().hex[:8]}"
+    anonymous_app = f"it-anon-{uuid.uuid4().hex[:8]}"
+    headers = {
+        "CF-Connecting-IP": "203.0.113.5",
+        "CF-IPCountry": "US",
+        "CF-IPCity": "Austin",
+        "CF-IPLatitude": "30.2713",
+        "CF-IPLongitude": "-97.7426",
+        "CF-Timezone": "America/Chicago",
+    }
+    endpoint = settings.common.snowplow.endpoints.post_endpoint
+    with TestClient(create_app()) as client:
+        located = client.post(endpoint, json=_payload(located_app), headers=headers)
+        anonymous = client.post(
+            endpoint, json=_payload(anonymous_app), headers={**headers, "SP-Anonymous": "*"}
+        )
+    assert (located.status_code, anonymous.status_code) == (204, 204)
+    assert _rows_for(ch, database, located_app)
+    assert _rows_for(ch, database, anonymous_app)
+    query = (
+        "SELECT toString(user_ip), extra.collector.client_ip.:String, "
+        "extra.collector.geo.city.:String, extra.collector.geo.latitude.:Float64, "
+        "extra.collector.geo.longitude.:Float64, extra.collector.anonymous.:Bool "
+        f"FROM {database}.local WHERE app_id = %(app_id)s"
+    )
+    assert ch.query(query, parameters={"app_id": located_app}).first_row == (
+        "203.0.113.5",
+        "203.0.113.5",
+        "Austin",
+        30.2713,
+        -97.7426,
+        None,
+    )
+    assert ch.query(query, parameters={"app_id": anonymous_app}).first_row == (
+        "0.0.0.0",
+        None,
+        None,
+        None,
+        None,
+        True,
+    )
+
+
 def test_post_batch_lands_in_clickhouse(tables, ch, database):
     from evnt.main import create_app
 
@@ -322,13 +382,126 @@ def test_encrypted_event_lands_in_clickhouse(
     assert _rows_for(ch, database, app_id) == [(app_id, "web", "pv")]
 
 
-def test_invalid_batch_never_partially_lands_in_clickhouse(tables, ch, database):
+def test_bad_events_cost_only_themselves_and_their_issues_land_in_extra(tables, ch, database):
+    """A batch with an unbuildable event and an invalid-but-buildable one.
+
+    The batch is acknowledged, the unbuildable event is dropped, and the
+    collector-owned ``extra.validation`` / ``extra.tracker`` keys round-trip
+    through the real JSON column without failing the insert.
+    """
     from evnt.main import create_app
 
-    app_id = f"it-invalid-{uuid.uuid4().hex[:8]}"
+    app_id = f"it-lenient-{uuid.uuid4().hex[:8]}"
     payload = _payload(app_id)
-    payload["data"].append({"aid": app_id})
+    good = payload["data"][0]
+    payload["data"] += [
+        {"aid": app_id},  # no event type: dropped
+        dict(
+            good,
+            p="headset",
+            duid="legacy-cookie",
+            vid="",
+            ttm="1700000000123",
+            url="https://example.com/deep?utm_source=x",
+            e="ue",
+            ue_pr=orjson.dumps(
+                {
+                    "schema": "iglu:com.snowplowanalytics.snowplow/unstruct_event/jsonschema/1-0-0",
+                    "data": {
+                        "schema": "iglu:com.snowplowanalytics.mobile/screen_view/jsonschema/1-0-0",
+                        "data": {"name": "Home"},
+                    },
+                }
+            ).decode(),
+        ),
+    ]
     with TestClient(create_app()) as client:
         response = client.post(settings.common.snowplow.endpoints.post_endpoint, json=payload)
-    assert response.status_code == 422
-    assert _rows_for(ch, database, app_id, timeout=0) == []
+    assert response.status_code == 204
+    assert sorted(_rows_for(ch, database, app_id)) == [(app_id, "mob", "pv"), (app_id, "web", "pv")]
+    row = ch.query(
+        f"SELECT page, toString(time), extra.tracker.platform.:String, "
+        f"extra.tracker.url.:String, toString(extra.tracker.true_tstamp), "
+        f"arrayMap(e -> (e.stage.:String, e.field.:String), extra.validation.:`Array(JSON)`) "
+        f"FROM {database}.local WHERE app_id = %(app_id)s AND platform = 'mob'",
+        parameters={"app_id": app_id},
+    ).first_row
+    # ClickHouse may infer the timestamp string as DateTime64, hence the prefix check.
+    page, time, platform, url, true_tstamp, validation = row
+    assert (page, time, platform, url) == (
+        "Home",
+        "2023-11-14 22:13:20.123",
+        "headset",
+        "https://example.com/deep?utm_source=x",
+    )
+    assert true_tstamp.startswith("2023-11-14")
+    assert true_tstamp.replace("T", " ").startswith("2023-11-14 22:13:20.123")
+    # The screen view without ``id`` also fails its Iglu schema.
+    assert validation == [("payload", "duid"), ("payload", "vid"), ("event", None)]
+
+
+def test_context_entities_tracker_params_and_fingerprint_land_in_extra(tables, ch, database):
+    """``extra.contexts``, ``extra.tracker`` overrides and the fingerprint round-trip.
+
+    One entity carries data with a duplicate JSON path, which the ``JSON``
+    column rejects as a nested object (see the next test); stored as text it
+    must not cost the insert.
+    """
+    from evnt.main import create_app
+
+    app_id = f"it-entities-{uuid.uuid4().hex[:8]}"
+    payload = _payload(app_id)
+    entities = [
+        {
+            "schema": "iglu:com.snowplowanalytics.mobile/screen_view/jsonschema/1-0-0",
+            "data": {"name": "Home"},
+        },
+        {"schema": "iglu:com.acme/thing/jsonschema/1-0-0", "data": {"a.b": 1, "a": {"b": 2}}},
+        {"schema": "iglu:com.acme/thing/jsonschema/1-0-0", "data": {"n": [1, "x", {"y": None}]}},
+    ]
+    payload["data"][0].update(
+        p="srv",
+        ip="203.0.113.9",
+        ua="curl/8.0",
+        tnuid="ecdff4d0-9175-40ac-a8bb-325c49733607",
+        co=orjson.dumps(
+            {
+                "schema": "iglu:com.snowplowanalytics.snowplow/contexts/jsonschema/1-0-0",
+                "data": entities,
+            }
+        ).decode(),
+    )
+    with TestClient(create_app()) as client:
+        response = client.post(settings.common.snowplow.endpoints.post_endpoint, json=payload)
+    assert response.status_code == 204
+    assert _rows_for(ch, database, app_id) == [(app_id, "srv", "pv")]
+
+    row = ch.query(
+        "SELECT toString(user_ip), user_agent, "
+        "extra.tracker.ip.:String, extra.tracker.network_userid.:String, "
+        "extra.collector.client_ip.:String, "
+        "arrayMap(e -> (e.version.:String, JSONExtractString(e.data.:String, 'name')), "
+        "extra.contexts.`com.snowplowanalytics.mobile/screen_view`.:`Array(JSON)`), "
+        "arrayMap(e -> e.data.:String, extra.contexts.`com.acme/thing`.:`Array(JSON)`), "
+        "arrayMap(e -> e.schema.:String, extra.validation.:`Array(JSON)`), "
+        "length(extra.event_fingerprint.:String) "
+        f"FROM {database}.local WHERE app_id = %(app_id)s",
+        parameters={"app_id": app_id},
+    ).first_row
+    ip, user_agent, sent_ip, network_userid, client_ip, screen_views, things, schemas, fp = row
+    assert (ip, user_agent, sent_ip) == ("203.0.113.9", "curl/8.0", "203.0.113.9")
+    assert network_userid == "ecdff4d0-9175-40ac-a8bb-325c49733607"
+    # client_ip stays the connection's address; the override is in user_ip.
+    assert client_ip != "203.0.113.9"
+    assert screen_views == [("1-0-0", "Home")]
+    assert [orjson.loads(data) for data in things] == [entity["data"] for entity in entities[1:]]
+    assert schemas == [entities[0]["schema"]]
+    assert fp == 32
+
+
+def test_json_column_rejects_a_duplicate_path_as_nested_json(ch):
+    """Why entity data is stored as text: nested, this value fails the insert."""
+    from clickhouse_connect.driver.exceptions import DatabaseError
+
+    with pytest.raises(DatabaseError, match="Duplicate path"):
+        ch.query('SELECT CAST(\'{"a.b": 1, "a": {"b": 2}}\' AS JSON)')

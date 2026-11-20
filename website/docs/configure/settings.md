@@ -23,9 +23,12 @@ A starter [`.env.example`](https://github.com/vladenisov/evnt/blob/main/.env.exa
 | --- | --- | --- |
 | `EVNT_COMMON__SNOWPLOW__USER_IP_HEADER` | `X-Forwarded-For` | Trusted proxy header containing the original client IP, or a comma-separated list checked in order (the first parseable value wins). Behind Cloudflare, use `CF-Connecting-IP,X-Forwarded-For`: `X-Forwarded-For` covers requests reaching the collector through another proxy. |
 | `EVNT_COMMON__SNOWPLOW__USER_COUNTRY_HEADER` | unset | Optional trusted proxy country header, for example `CF-IPCountry`. Omit it to disable country-header ingestion. |
+| `EVNT_COMMON__SNOWPLOW__CLOUDFLARE_GEO_HEADERS` | `false` | Store Cloudflare's visitor location headers in `extra.collector.geo`; see [visitor location](#visitor-location-cloudflare). |
+| `EVNT_COMMON__SNOWPLOW__HONOR_SP_ANONYMOUS` | `false` | Honour the `SP-Anonymous` request header; see [server anonymisation](#server-anonymisation-sp-anonymous). By default the header is ignored. |
 
-Both headers require `EVNT_SECURITY__TRUST_PROXY_HEADERS=true`. With proxy
-trust disabled, the direct peer provides the client IP and country headers are
+The IP, country and location headers require
+`EVNT_SECURITY__TRUST_PROXY_HEADERS=true`. With proxy trust disabled, the
+direct peer provides the client IP and country and location headers are
 ignored. See [proxy trust](security.md).
 
 The existing `user_ip` column remains IPv4. The full original address, including
@@ -40,6 +43,66 @@ Cloudflare's `CF-Pseudo-IPv4` is a synthetic address and is not used for client
 identity or geolocation. Use Pseudo IPv4 **Off** or **Add Header** so
 `CF-Connecting-IP` retains the original address; **Overwrite Headers** replaces
 it with a synthetic address. See [Cloudflare's header reference](https://developers.cloudflare.com/fundamentals/reference/http-headers/).
+
+### Visitor location (Cloudflare)
+
+With `EVNT_COMMON__SNOWPLOW__CLOUDFLARE_GEO_HEADERS=true` and proxy trust on,
+the headers of Cloudflare's **Add visitor location headers** managed transform
+(Rules > Settings > Managed Transforms; see the
+[Cloudflare reference](https://developers.cloudflare.com/rules/transform/managed-transforms/reference/))
+are stored in `extra.collector.geo`:
+
+| Header | Key | Stored when |
+| --- | --- | --- |
+| `cf-ipcity` | `city` | printable text, at most 128 characters |
+| `cf-region` | `region` | printable text, at most 128 characters |
+| `cf-region-code` | `region_code` | 1 to 8 ASCII letters or digits, uppercased (ISO 3166-2 subdivision, e.g. `TX`) |
+| `cf-ipcontinent` | `continent` | two ASCII letters, uppercased, or `T1` (Tor) |
+| `cf-iplatitude` | `latitude` | decimal degrees from -90 to 90, stored as a number |
+| `cf-iplongitude` | `longitude` | decimal degrees from -180 to 180, stored as a number |
+| `cf-postal-code` | `postal_code` | up to 16 ASCII letters, digits, spaces and dashes, starting with a letter or digit |
+| `cf-metro-code` | `metro_code` | up to 8 digits, as text |
+| `cf-timezone` | `timezone` | an IANA zone name such as `America/Chicago` |
+
+Only the values that pass are stored, and `geo` is absent when none does. A
+value that fails is left out without affecting the request and counted in
+`evnt_geo_header_values_rejected_total{field}`. Cloudflare sends non-ASCII
+names (`São Paulo`) as raw UTF-8 bytes, which the collector decodes as UTF-8; a
+percent-encoded name is decoded too, and a value that is not valid UTF-8 is
+rejected. The country stays in `ip_country`
+(`EVNT_COMMON__SNOWPLOW__USER_COUNTRY_HEADER=CF-IPCountry`). These headers are
+only as trustworthy as the proxy: enable this only when every request reaches
+the collector through Cloudflare or a proxy that strips client-sent `cf-*`
+headers.
+
+```sql
+SELECT
+    extra.collector.geo.city.:String AS city,
+    extra.collector.geo.latitude.:Float64 AS latitude,
+    extra.collector.geo.longitude.:Float64 AS longitude
+FROM evnt.local
+WHERE time >= now() - INTERVAL 1 HOUR
+LIMIT 10;
+```
+
+### Server anonymisation (`SP-Anonymous`)
+
+The Snowplow trackers send `SP-Anonymous: *` when server-side anonymisation is
+on (`anonymousTracking: { withServerAnonymisation: true }` in the JavaScript
+tracker, `serverAnonymisation` on iOS and Android). The collector ignores the
+header by default, as before. With
+`EVNT_COMMON__SNOWPLOW__HONOR_SP_ANONYMOUS=true`, a request that carries it,
+with any value, on `/tracker`, `/i` or `/e`:
+
+- stores `user_ip` as `0.0.0.0` and no `extra.collector.client_ip`,
+  `ip_country` or `geo`; `extra.collector` is `{"anonymous": true}`;
+- ignores the `ip` tracker parameter, also for `p=srv` events, and does not
+  keep it in `extra.tracker.ip`;
+- does not read the `_sp_id` cookie for a missing `duid`. The collector never
+  sets cookies.
+
+`ua` and `tnuid` are still used and kept, since the tracker sent them on
+purpose. CORS preflights allow the header, as they allow any request header.
 
 ## ClickHouse and RabbitMQ
 

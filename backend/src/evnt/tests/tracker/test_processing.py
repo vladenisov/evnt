@@ -49,7 +49,9 @@ async def test_process_data_owns_collector_metadata_without_mutating_parsed_extr
         }
     )
     rows = await process_data(body, "", "2001:db8::7", None, user_country="CN")
-    assert rows[0]["extra"] == {
+    extra = rows[0]["extra"]
+    assert len(extra.pop("event_fingerprint")) == 32
+    assert extra == {
         "keep": "value",
         "collector": {"client_ip": "2001:db8::7", "ip_country": "CN"},
     }
@@ -108,6 +110,7 @@ def test_build_initial_model_skips_revalidation_and_copies_mutable_defaults(
     monkeypatch,
 ):
     runtime_payload_module = importlib.import_module("evnt.tracker.payload")
+    rows_module = importlib.import_module("evnt.tracker.rows")
     body = PayloadElementModel.model_validate(
         {
             "aid": "example-app",
@@ -133,7 +136,7 @@ def test_build_initial_model_skips_revalidation_and_copies_mutable_defaults(
         classmethod(_fail_model_validate),
     )
 
-    first = runtime_payload_module._build_initial_model(
+    first = rows_module.build_initial_model(
         body,
         user_agent,
         IPv4Address("127.0.0.1"),
@@ -143,7 +146,7 @@ def test_build_initial_model_skips_revalidation_and_copies_mutable_defaults(
     first.ue["event"] = {"value": 1}
     first.extra["context"] = {"value": 2}
     first.screen["name"] = "mutated"
-    second = runtime_payload_module._build_initial_model(
+    second = rows_module.build_initial_model(
         body,
         user_agent,
         IPv4Address("127.0.0.1"),
@@ -187,3 +190,45 @@ async def test_large_batches_yield_to_the_event_loop(monkeypatch, anyio_backend)
     assert len(rows) == 200
     # 200 events at one yield per 64 give the ticker at least 3 turns.
     assert ticks - before >= 3
+
+
+_SP_ID_COOKIE = (
+    "_sp_id.1234=88888888-8888-8888-8888-888888888888.1700000000.1.1700000100.1700000050."
+    "99999999-9999-9999-9999-999999999999"
+)
+_SRV_EVENT = {"e": "pv", "aid": "a", "p": "srv", "tv": "py-1", "ip": "198.51.100.1"}
+
+
+@pytest.mark.anyio
+async def test_process_data_anonymous_ignores_every_network_input(anyio_backend):
+    rows = await process_data(
+        PayloadModel(data=[dict(_SRV_EVENT)]),
+        "",
+        "2001:db8::7",
+        _SP_ID_COOKIE,
+        user_country="DE",
+        geo={"city": "Berlin"},
+        anonymous=True,
+    )
+    (row,) = rows
+    assert str(row["user_ip"]) == "0.0.0.0"
+    assert row["duid"] is None
+    assert row["extra"]["collector"] == {"anonymous": True}
+    assert "tracker" not in row["extra"]
+
+
+@pytest.mark.anyio
+async def test_process_data_stores_geo_in_a_collector_dict_per_row(anyio_backend):
+    geo = {"city": "Berlin", "latitude": 52.52}
+    rows = await process_data(
+        PayloadModel(data=[dict(_SRV_EVENT), dict(_SRV_EVENT)]),
+        "",
+        "2001:db8::7",
+        None,
+        user_country="DE",
+        geo=geo,
+    )
+    first, second = (row["extra"]["collector"] for row in rows)
+    assert first == {"client_ip": "2001:db8::7", "ip_country": "DE", "geo": geo}
+    assert first == second
+    assert first is not second

@@ -19,6 +19,18 @@ from evnt.tracker.utils import find_available
 
 DEFAULT_UUID = UUID("00000000-0000-0000-0000-000000000000")
 DEFAULT_DATE = datetime(1970, 1, 1, tzinfo=UTC)
+UINT64_MAX = 2**64 - 1
+# Real browser user agents stay under 1 KB; 2 KB leaves room for in-app
+# browsers that append many tokens. An IP address in text is at most 45
+# characters (IPv4-mapped IPv6), plus a zone id. A network user id is a UUID.
+MAX_UA_PARAM_CHARS = 2048
+MAX_IP_PARAM_CHARS = 64
+MAX_TNUID_PARAM_CHARS = 128
+
+# Every platform code the Snowplow trackers can send. The ``platform`` column is
+# an Enum8 without ``headset``, so ``evnt.tracker.rows.apply_platform`` maps it
+# to a stored code before the row is written (``STORED_PLATFORM``).
+type Platform = Literal["web", "mob", "pc", "srv", "app", "tv", "cnsl", "iot", "headset"]
 
 _utcnow = partial(datetime.now, UTC)
 
@@ -26,10 +38,9 @@ _utcnow = partial(datetime.now, UTC)
 class SnowPlowModel(BaseModel):
     """Base model for Snowplow data."""
 
-    # ``data`` is intentionally ``list[Any]`` only on this abstract base: the
-    # base is never instantiated/validated directly. Concrete subclasses tighten
-    # the element type to restore schema enforcement on the real POST body wrapper
-    # (e.g. ``PayloadModel.data: list[PayloadElementModel]`` below).
+    # Elements stay unvalidated here on purpose: one malformed event must not
+    # reject its whole batch, so each element is validated on its own later
+    # (``evnt.tracker.element.build_elements``).
     data: list[Any] = Field(...)
     json_schema: str | None = Field(
         None,
@@ -74,7 +85,8 @@ class StructuredEvent(BaseModel):
 
 
 class Validation(BaseModel):
-    aid: str = Field(..., title="Unique identifier for website / application")
+    # Optional: the JS tracker omits ``aid`` altogether when ``appId`` is empty.
+    aid: str = Field("", title="Unique identifier for website / application")
     # URL and referrer fields
     url: str = Field("", title="Page URL")
     refr: str = Field("", title="Referrer URL")
@@ -89,7 +101,9 @@ class Validation(BaseModel):
     @field_validator("refr", "url", mode="before")
     @classmethod
     def decode_url_fields(cls, v: Any) -> Any:
-        return urlparse.unquote(v) if v else v
+        # Anything but a string is left to the ``str`` check: ``unquote`` raises
+        # TypeError on it, which pydantic would not turn into a ValidationError.
+        return urlparse.unquote(v) if v and isinstance(v, str) else v
 
 
 class Base(BaseModel):
@@ -148,6 +162,8 @@ class PayloadBase(Base, Validation, StructuredEvent):
 
     # Identifiers
     eid: UUID = Field(default_factory=uuid4, title="Event UUID")
+    # A nil UUID is what the mobile trackers send for an anonymised user, so it
+    # is read as "no id" (see ``nil_uuid_is_absent``).
     duid: UUID | None = Field(
         None,
         title="Unique identifier for a user, based on a first party cookie",
@@ -160,8 +176,11 @@ class PayloadBase(Base, Validation, StructuredEvent):
         None,
         title="Unique identifier (UUID) for this visit of this user_id to this domain",
     )
+    # Bounded to the UInt64 column: an out-of-range count would fail the insert.
     vid: int = Field(
         0,
+        ge=0,
+        le=UINT64_MAX,
         title="Index of number of visits that this user_id has made to this domain",
     )
 
@@ -180,7 +199,7 @@ class PayloadBase(Base, Validation, StructuredEvent):
     )
 
     # Platform and environment
-    p: Literal["web", "mob", "pc", "srv", "app", "tv", "cnsl", "iot"] = Field(
+    p: Platform = Field(
         ...,
         title="The platform the app runs on",
         description="i.e. web",
@@ -192,23 +211,52 @@ class PayloadBase(Base, Validation, StructuredEvent):
 
     # Browser/viewport information
     cs: str = Field("", title="Web page's character encoding", description="i.e. UTF-8")
-    res: str = Field(..., title="Screen / monitor resolution")
+    # Optional: visionOS, and macOS without a main screen, never send it.
+    res: str = Field("", title="Screen / monitor resolution")
     vp: str = Field("0x0", title="Browser viewport width and height")
     ds: str = Field("0x0", title="Web page width and height")
     cd: int = Field(0, title="Browser color depth")
     cookie: int | None = Field(None, title="Does the browser permit cookies?")
 
+    @field_validator("duid", "sid", mode="after")
+    @classmethod
+    def nil_uuid_is_absent(cls, v: UUID | None) -> UUID | None:
+        return None if v is not None and v.int == 0 else v
+
 
 class PayloadElementModel(PayloadBase, Contexts):
     """Base model for payload elements (common to GET and POST)."""
 
-    pass
+    # Only on the element, not on ``PayloadBase``: the stored row has no column
+    # for it, it lands in ``extra.tracker.true_tstamp`` instead.
+    ttm: datetime | None = Field(
+        None,
+        title="True timestamp: when the event really occurred, set by the caller",
+    )
+    # Overrides sent by server-side trackers and WebView bridges, which send on
+    # behalf of a client the request does not come from. Also element-only:
+    # ``evnt.tracker.params`` applies them and keeps them in ``extra.tracker``.
+    # The bounds keep what is stored there small; a longer value fails
+    # validation, is dropped and listed in ``extra.validation``.
+    ua: str | None = Field(
+        None,
+        max_length=MAX_UA_PARAM_CHARS,
+        title="User agent to parse instead of the User-Agent header",
+    )
+    ip: str | None = Field(
+        None,
+        max_length=MAX_IP_PARAM_CHARS,
+        title="Client IP address, applied for server-side (p=srv) events only",
+    )
+    tnuid: str | None = Field(
+        None,
+        max_length=MAX_TNUID_PARAM_CHARS,
+        title="Network user id set by the tracker",
+    )
 
 
 class PayloadModel(SnowPlowModel):
-    """Model for JSON payload in POST requests."""
-
-    data: list[PayloadElementModel] = Field([])
+    """The POST body envelope: a schema and a list of not yet validated events."""
 
 
 class UserAgentModel(BaseModel):

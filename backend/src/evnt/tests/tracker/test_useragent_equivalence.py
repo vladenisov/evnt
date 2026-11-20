@@ -9,7 +9,7 @@ from ua_parser import parse
 
 from evnt.tracker import useragent as useragent_module
 from evnt.tracker.models import PayloadElementModel, UserAgentModel
-from evnt.tracker.payload import _build_initial_model, dump_insert_model
+from evnt.tracker.rows import build_initial_model, dump_insert_model
 
 USER_AGENTS = [
     "",
@@ -90,7 +90,7 @@ def _typed_items(model: UserAgentModel) -> list[tuple[str, type, Any]]:
 
 
 def _row(model: UserAgentModel | dict[str, Any]) -> str:
-    return repr(dump_insert_model(_build_initial_model(_ELEMENT, model, _IP)))
+    return repr(dump_insert_model(build_initial_model(_ELEMENT, model, _IP)))
 
 
 @pytest.fixture

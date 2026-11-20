@@ -115,17 +115,25 @@ def test_tracker_post_with_empty_batch_inserts_no_rows(monkeypatch):
     assert connector.inserted_batches == [[]]
 
 
-def test_tracker_post_rejects_invalid_payload(monkeypatch):
+def test_tracker_post_rejects_a_body_that_is_not_a_payload(monkeypatch):
     connector = RecordingConnector()
     client = _build_client(monkeypatch, connector)
 
     with client:
-        # Missing required fields (e.g. ``e``/``tv``) on the element.
-        response = client.post(
-            POST_ENDPOINT,
-            json={"data": [{"aid": "example-app"}]},
-        )
+        # No ``data`` list: not a Snowplow payload at all.
+        response = client.post(POST_ENDPOINT, json={"e": "pv", "aid": "example-app"})
 
     assert response.status_code == 422
-    # No rows should have been forwarded to the connector on a validation error.
     assert connector.inserted_batches == []
+
+
+def test_tracker_post_drops_only_the_event_that_cannot_be_built(monkeypatch):
+    connector = RecordingConnector()
+    client = _build_client(monkeypatch, connector)
+
+    with client:
+        # No ``e``: the event type column cannot be filled, so it is dropped.
+        response = client.post(POST_ENDPOINT, json={"data": [{"aid": "example-app"}]})
+
+    assert response.status_code == HTTP_NO_CONTENT
+    assert connector.inserted_batches == [[]]
