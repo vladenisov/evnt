@@ -127,7 +127,7 @@ jobs:
 
     # vue-tsc's compiler hooks and Vitest's V8 coverage need Node.
     # Vite development and production builds run on Bun.
-    - uses: actions/setup-node@v5
+    - uses: actions/setup-node@v7
       with:
         node-version-file: frontend/.node-version
 
