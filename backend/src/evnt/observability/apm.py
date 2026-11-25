@@ -8,9 +8,14 @@ from evnt.config import settings
 
 def create_elastic_apm_client() -> Client:
     """Build an Elastic APM client from the current settings."""
-    elastic_config = settings.elastic_apm.model_dump()
-    elastic_config.pop("enabled")
-    elastic_config["SERVICE_NAME"] = settings.common.service_name
+    apm = settings.elastic_apm
+    # elasticapm reads upper-case keys only. An unset server URL is left out so
+    # the agent's own default (or ELASTIC_APM_SERVER_URL) applies.
+    elastic_config: dict[str, str] = {
+        "SERVICE_NAME": apm.service_name or settings.common.service_name,
+    }
+    if apm.server_url is not None:
+        elastic_config["SERVER_URL"] = apm.server_url
 
     client: Client = make_apm_client(elastic_config)
     return client

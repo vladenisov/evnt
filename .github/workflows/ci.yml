@@ -14,6 +14,16 @@ permissions:
   contents: read
 
 jobs:
+  release-scripts:
+    name: Release scripts (unittest)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    # release.yml runs these too, but only after merge; a broken
+    # release_metadata.py should fail the pull request instead.
+    - name: Test release validation
+      run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+
   backend:
     name: Backend (ruff + mypy + pytest)
     runs-on: ubuntu-latest
@@ -30,6 +40,12 @@ jobs:
       uses: astral-sh/setup-uv@v7
       with:
         enable-cache: true
+
+    # The sealed-box interop tests run the served /e.js under Node. With CI
+    # set they fail, not skip, when Node is missing.
+    - uses: actions/setup-node@v7
+      with:
+        node-version-file: frontend/.node-version
 
     # --locked, not --frozen: --locked fails when pyproject.toml has moved ahead
     # of uv.lock; --frozen would silently install the stale lock.

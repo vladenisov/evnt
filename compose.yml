@@ -53,7 +53,9 @@ services:
     - "EVNT_LOGGING__LEVEL=DEBUG"
     command: ["evnt", "queue", "worker"]
     restart: on-failure
-    stop_grace_period: 30s
+    # Above insert_timeout_seconds (60 by default), so the shutdown flush is
+    # not SIGKILLed mid-insert.
+    stop_grace_period: 90s
     healthcheck:
       test: ["CMD", "evnt", "queue", "healthcheck"]
       interval: 30s

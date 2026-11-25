@@ -31,15 +31,22 @@ backend/
     config.py, constants.py      EVNT_* settings model and defaults
     cli.py                       the `evnt` CLI (Fire)
     health.py, crypto.py         readiness probe; sealed-envelope scheme
+    protocols.py, exceptions.py  RowSink/HealthChecker interfaces; error types
+    concurrency.py, static.py    bounded CPU offload; /static that may fill after boot
+    assets/seal.js               browser sealer served at <encrypted endpoint>.js
     api/                         HTTP routers: tracker, encrypted, proxy, health; deps.py
     tracker/                     Snowplow payload models, parsing, Iglu, UA, IP
     storage/clickhouse/          client factory, connector, DDL, field registry
-    ingest/                      RabbitMQ publisher (rabbitmq.py), batch worker (worker.py)
-    middleware/, observability/  raw-ASGI middleware; logging, tracing, APM
+    ingest/                      RabbitMQ side: publisher (rabbitmq.py), request merging
+                                 (coalesce.py), batch worker (worker.py; flush.py inserts,
+                                 isolates bad rows and parks them in the failed queue;
+                                 insert_failures.py), readiness (health.py)
+    middleware/, observability/  raw-ASGI middleware; logging, tracing, APM, metrics
     tests/                       mirrors the package; tests/integration needs real backends
 frontend/                        Vue 3 demo SPA (Vite, Bun), served at /demo/
 website/                         Docusaurus docs (Bun); make check-docs validates types and links
 deploy/clickhouse/               ClickHouse config mounted by compose.yml
+.github/workflows/, scripts/     CI, docs and release workflows; release_metadata.py + its test
 Dockerfile, compose.yml, Makefile
 ```
 

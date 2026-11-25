@@ -8,7 +8,7 @@ enforces coverage and requires integration tests. Keep all three aligned.
 ## Prerequisites
 
 - [uv](https://docs.astral.sh/uv/) for the backend. It installs the pinned
-  Python (`backend/.python-version`, 3.14) itself.
+  Python (`backend/.python-version`, 3.15) itself.
 - Bun 1.4.2 (`frontend/.bun-version`, also pinned in both `packageManager` fields) for
   frontend and documentation dependencies, development and builds. Node 26
   (`frontend/.node-version`) runs vue-tsc and Vitest with V8 coverage.
@@ -68,6 +68,11 @@ cover (`api/`, `tracker/`, `storage/`, ...). Async tests use anyio
 (`@pytest.mark.anyio`, asyncio backend). `tests/support.py` has
 `build_app(monkeypatch)` for route tests against fake backends.
 
+`tests/api/test_encrypted_script.py` runs the served `/e.js` under Node to check
+it against the Python opener. Without `node` on `PATH` those tests skip locally;
+with `CI` set (as GitHub Actions does) they fail, and the backend CI job installs
+Node from `frontend/.node-version` for them.
+
 ### Integration tests (real ClickHouse and RabbitMQ)
 
 Unit tests fake both backends, so they cannot catch DDL ClickHouse rejects,
@@ -77,7 +82,10 @@ servers: `db init` idempotency, plaintext and sealed POST/GET requests landing
 in ClickHouse through the real lifespan, a batch with bad events storing the
 rest with their `extra.validation` and `extra.tracker` keys, unknown context
 entities, tracker overrides, the fingerprint, visitor location and the anonymous flag
-round-tripping through the `extra` JSON column, and the RabbitMQ worker delivering plaintext and encrypted requests.
+round-tripping through the `extra` JSON column, the RabbitMQ worker delivering plaintext and encrypted requests,
+an event with an unpaired surrogate stored in both ingest modes, and an undecodable queue message
+moved to the failed queue (`tests/ingest/test_worker_failed_queue.py` holds more failed-queue cases
+under the same marker).
 
 They skip when the servers are unreachable. CI sets `EVNT_IT_REQUIRED=1`, which
 turns a skip into a failure. Against the compose stack:
@@ -166,7 +174,14 @@ a GitHub Release with notes generated from merged pull requests. Existing
 releases are preserved when a workflow is rerun.
 
 Use **Actions → Release → Run workflow** from `main` to publish the current
-package version. The workflow validates the requested version, runs CI,
+package version. The release scripts in `.github/scripts/` have their own tests,
+which CI runs on every pull request:
+
+```bash
+python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+```
+
+The workflow validates the requested version, runs CI,
 reserves its tag, and publishes the image and GitHub Release. See
 [Publishing releases](run/releases.md) for version bumps, the complete flow,
 release-note categories, and retries.

@@ -4,6 +4,7 @@
 | --- | --- | --- |
 | `EVNT_PERFORMANCE__USER_AGENT_CACHE_SIZE` | `32768` | Maximum entries in each process-local User-Agent LRU cache. Set to `0` to disable caching. |
 | `EVNT_PERFORMANCE__CPU_TASK_CONCURRENCY` | `8` | Maximum CPU-heavy helper calls submitted concurrently by each application process. |
+| `EVNT_PERFORMANCE__MAX_CONCURRENT_CONNECTIONS` | `100` | Size of the outbound HTTP connection pool of the [script proxy](proxy.md). Despite the name, it does not limit inbound connections. |
 | `EVNT_PERFORMANCE__DB_POOL_SIZE` | `5` | Maximum concurrent ClickHouse HTTP connections per process, both overall and per host. The native async client uses aiohttp rather than a thread-pool wrapper. |
 
 Those offloads run on asyncio's default thread pool, which holds

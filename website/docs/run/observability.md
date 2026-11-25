@@ -57,8 +57,10 @@ docker build --build-arg EXTRAS='sentry apm crypto' -t evnt:local .
 ```
 
 - `EVNT_SENTRY__ENABLED=true` enables Sentry; configure `EVNT_SENTRY__DSN`.
-- `EVNT_ELASTIC_APM__ENABLED=true` enables Elastic APM; configure its server
-  and service settings with the `EVNT_ELASTIC_APM__` prefix.
+- `EVNT_ELASTIC_APM__ENABLED=true` enables Elastic APM; set
+  `EVNT_ELASTIC_APM__SERVER_URL`, and `EVNT_ELASTIC_APM__SERVICE_NAME` to
+  report under a name other than `EVNT_COMMON__SERVICE_NAME`. Every other
+  agent option is read from the agent's own `ELASTIC_APM_*` variables.
 
 Inspect defaults with `evnt settings`. Missing optional dependencies cause an
 explicit startup error when their integration is enabled.

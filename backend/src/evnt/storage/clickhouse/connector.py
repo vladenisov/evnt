@@ -15,7 +15,6 @@ from evnt.storage.clickhouse.schema import ColumnDef, TupleColumnDef, get_fields
 
 if TYPE_CHECKING:
     from clickhouse_connect.driver import AsyncClient
-    from clickhouse_connect.driver.query import QueryResult
 
 logger = structlog.get_logger(__name__)
 
@@ -23,7 +22,7 @@ logger = structlog.get_logger(__name__)
 _ZERO_UUID = UUID(int=0)
 
 
-# How a payload value is coerced for its column (see _sanitize_clickhouse_value).
+# How a payload value is coerced for its column (see _coerce).
 _KIND_RAW = 0
 _KIND_STRING = 1
 _KIND_UUID = 2
@@ -42,7 +41,19 @@ def _value_kind(type_name: str) -> int:
 
 
 def _coerce(kind: int, value: Any) -> Any:
-    """``_sanitize_clickhouse_value`` with the type name already classified."""
+    """Coerce ``None`` into an explicit, type-correct default for non-Nullable columns.
+
+    Several non-Nullable columns are optional in the payload models (e.g.
+    ``device_id`` / ``session_id`` are ``UUID | None``). Rather than relying
+    on the driver to silently zero-fill, map ``None`` to the column type's
+    zero value explicitly. UUID strings (rows that went through the JSON
+    queue) are parsed.
+
+    NOTE: a missing ``device_id`` becomes the all-zero UUID, which is also
+    the ``SAMPLE BY``/``ORDER BY`` key (``cityHash64(device_id)``); all
+    anonymous events therefore share one sample-key value. Changing that is
+    a sampling-design decision, out of scope for value coercion.
+    """
 
     if kind == _KIND_STRING:
         return "" if value is None else value
@@ -165,33 +176,6 @@ class ClickHouseConnector:
             logger.error("Database command failed", error=str(e), query=query)
             raise
 
-    async def query(
-        self,
-        query: str,
-        parameters: dict[str, Any] | None = None,
-    ) -> QueryResult:
-        """
-        Execute a ClickHouse query.
-
-        Args:
-            query: The query to execute
-            parameters: Optional query parameters
-
-        Returns:
-            The query results
-        """
-        try:
-            result: QueryResult = await self.conn.query(query, parameters=parameters)
-            return result
-        except (ClickHouseError, DatabaseError) as e:
-            logger.error(
-                "Database query failed",
-                error=str(e),
-                query=query,
-                parameters=parameters,
-            )
-            raise
-
     async def get_table_name(self, table_group: str = DEFAULT_TABLE_GROUP) -> str:
         """
         Get the table name for a specific group.
@@ -246,31 +230,6 @@ class ClickHouseConnector:
             table_group: The table group
         """
         await self.insert_batch(rows, table_group=table_group)
-
-    @staticmethod
-    def _sanitize_clickhouse_value(type_name: str, value: Any) -> Any:
-        """Coerce ``None`` into an explicit, type-correct default for non-Nullable columns.
-
-        Several non-Nullable columns are optional in the payload models (e.g.
-        ``device_id`` / ``session_id`` are ``UUID | None``). Rather than relying
-        on the driver to silently zero-fill, map ``None`` to the column type's
-        zero value explicitly.
-
-        NOTE: a missing ``device_id`` becomes the all-zero UUID, which is also
-        the ``SAMPLE BY``/``ORDER BY`` key (``cityHash64(device_id)``); all
-        anonymous events therefore share one sample-key value. Changing that is
-        a sampling-design decision, out of scope for value sanitization.
-        """
-
-        if type_name == "UUID":
-            if value in (None, ""):
-                value = _ZERO_UUID
-            elif isinstance(value, str):
-                value = UUID(value)
-            return value
-        if type_name == "String" or type_name.startswith("LowCardinality(String"):
-            return "" if value is None else value
-        return value
 
     @staticmethod
     def _rows_to_values(

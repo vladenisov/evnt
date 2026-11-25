@@ -1,6 +1,67 @@
 {
   $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: [
+    "config:recommended",
+    // Workflows hold DOCKERHUB_TOKEN and contents: write; a moved tag must not
+    // be able to change what runs there.
+    "helpers:pinGitHubActionDigests",
+  ],
+  // Every merge to main publishes vladenisov/evnt:latest, so nothing merges
+  // itself until the release has been public for three days.
+  minimumReleaseAge: "3 days",
+  internalChecksFilter: "strict",
+  // Reviewed, not automerged: a lock refresh has no release age to wait on, and
+  // backend ranges are open (fastapi>=0.143), so it is also where 0.x minors
+  // arrive. The age gate is lifted or the PR would stay pending forever.
   lockFileMaintenance: {
     enabled: true,
+    automerge: false,
+    minimumReleaseAge: null,
   },
+  // Off by default; without it nothing bumps backend/vendor/iglu-central.
+  "git-submodules": {
+    enabled: true,
+  },
+  // Security fixes get their own PR and a human merge, whatever their size.
+  vulnerabilityAlerts: {
+    groupName: null,
+    automerge: false,
+  },
+  packageRules: [
+    {
+      description: "CI is a full gate: merge aged patch and digest updates as one group",
+      matchUpdateTypes: ["patch", "digest"],
+      groupName: "non-major dependencies",
+      groupSlug: "non-major",
+      automerge: true,
+    },
+    {
+      description: "Same group for minors, except 0.x, where a minor may break. Covers manifest updates only; in-range 0.x minors come with lock file maintenance",
+      matchUpdateTypes: ["minor"],
+      matchCurrentVersion: "!/^v?0\\./",
+      groupName: "non-major dependencies",
+      groupSlug: "non-major",
+      automerge: true,
+    },
+    {
+      description: "Pinning keeps the version that already runs, so there is nothing to age",
+      matchUpdateTypes: ["pin", "pinDigest"],
+      groupName: "pin dependencies",
+      groupSlug: "pin",
+      minimumReleaseAge: null,
+      automerge: true,
+    },
+    {
+      description: "Submodule commits carry no release timestamp, so they cannot be aged: review them",
+      matchManagers: ["git-submodules"],
+      groupName: null,
+      minimumReleaseAge: null,
+      automerge: false,
+    },
+    {
+      description: "Majors always wait for review",
+      matchUpdateTypes: ["major"],
+      automerge: false,
+    },
+  ],
 }

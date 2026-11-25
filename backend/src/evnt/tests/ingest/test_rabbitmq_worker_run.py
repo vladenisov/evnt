@@ -91,11 +91,8 @@ class _Sink:
     def __init__(self):
         self.calls = []
 
-    async def insert_batch(self, rows, table_group="evnt"):
-        self.calls.append((table_group, rows))
-
     async def insert_rows(self, rows, table_group="evnt"):
-        raise AssertionError("worker should prefer insert_batch")
+        self.calls.append((table_group, rows))
 
 
 @pytest.mark.anyio
@@ -253,7 +250,7 @@ async def test_run_clears_step_clock_while_waiting_for_messages(anyio_backend, m
 @pytest.mark.anyio
 async def test_insert_attempt_restarts_step_clock_even_on_failure(anyio_backend, monkeypatch):
     class _FailingSink:
-        async def insert_batch(self, rows, table_group="evnt"):
+        async def insert_rows(self, rows, table_group="evnt"):
             raise RuntimeError("boom")
 
     worker = _run_worker([], _FailingSink(), monkeypatch)

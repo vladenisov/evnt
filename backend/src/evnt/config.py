@@ -238,7 +238,9 @@ class ElasticAPMConfig(BaseModel):
     """Elastic APM configuration."""
 
     enabled: bool = False
-    service_name: str = APP_SLUG
+    # Unset: the agent reports as ``common.service_name``.
+    service_name: str | None = None
+    # Unset: the agent's own default, or its ELASTIC_APM_SERVER_URL variable.
     server_url: str | None = None
 
 
@@ -404,7 +406,13 @@ class ProxyConfig(BaseModel):
 class PerformanceConfig(BaseModel):
     """Performance tuning configuration."""
 
-    max_concurrent_connections: int = Field(default=100, gt=0)
+    # Despite the name, this does not limit inbound connections: it sizes the
+    # outbound HTTP connection pool of the analytics-script proxy (/proxy/route).
+    max_concurrent_connections: int = Field(
+        default=100,
+        gt=0,
+        description="Size of the outbound HTTP connection pool used by the script proxy.",
+    )
     db_pool_size: int = Field(default=5, gt=0)
     user_agent_cache_size: int = Field(default=32768, ge=0)
     cpu_task_concurrency: int = Field(default=8, gt=0)
@@ -460,9 +468,9 @@ class ClickHouseConfiguration(BaseModel):
             )
         return value
 
-    # Can be overridden via environment variables such as:
-    # EVNT_CLICKHOUSE__CONFIGURATION__TABLES__EVNT__LOCAL__ENGINE=
-    #   "ReplacingMergeTree()"
+    # An override replaces this whole mapping, it is not merged into it: pass
+    # the complete JSON in EVNT_CLICKHOUSE__CONFIGURATION__TABLES. A nested
+    # variable (...__TABLES__EVNT__LOCAL__ENGINE) would drop every other key.
     tables: dict[str, Any] = {
         "evnt": {
             "enabled": True,
@@ -502,7 +510,6 @@ class ClickHouseConfig(BaseModel):
 
     connection: ClickHouseConnection = ClickHouseConnection()
     configuration: ClickHouseConfiguration = ClickHouseConfiguration()
-    tables: dict[str, Any] = {}
     startup_timeout_seconds: int = Field(
         default=DEFAULT_CLICKHOUSE_STARTUP_TIMEOUT_SECONDS,
         gt=0,
@@ -596,8 +603,15 @@ class CommonConfig(BaseModel):
     # Served at /static; `evnt scripts download` puts the Snowplow tracker here.
     static_dir: Path = Path("static")
     service_name: str = APP_SLUG
+    # Public origin of the collector, used to build the URLs /proxy/hash hands
+    # out. Left unset, the origin is taken from each request instead.
     hostname: AnyHttpUrl = AnyHttpUrl("http://localhost:8000")
     snowplow: Snowplow = Snowplow()
+
+    @property
+    def hostname_configured(self) -> bool:
+        """Whether ``hostname`` was set explicitly rather than left at its default."""
+        return "hostname" in self.model_fields_set
 
 
 class Settings(BaseSettings):

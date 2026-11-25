@@ -2,7 +2,8 @@
 
 Holds ``RabbitMQPublisher``, the queued-insert payload format, and the
 connect/startup-retry helpers the publisher and the batch worker share. The
-worker lives in ``evnt.ingest.worker``; insert-failure classification lives in
+worker lives in ``evnt.ingest.worker``, its flush and failed-queue half in
+``evnt.ingest.flush``; insert-failure classification lives in
 ``evnt.ingest.insert_failures``.
 """
 

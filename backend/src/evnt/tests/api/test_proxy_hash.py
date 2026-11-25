@@ -102,7 +102,7 @@ def test_hashed_url_round_trips_through_the_route(monkeypatch):
             return None
 
     class _Client:
-        def build_request(self, method, url):
+        def build_request(self, method, url, headers=None):
             return SimpleNamespace(method=method, url=url)
 
         async def send(self, request, stream):

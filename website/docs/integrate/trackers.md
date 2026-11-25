@@ -107,7 +107,10 @@ keys. A repeated static context kept in `extra.contexts` keeps them, as text.
 `stage` is one of:
 
 - `payload`: an atomic tracker parameter (`field` names it, the error quotes the
-  rejected value); the field was stored with its default.
+  rejected value); the field was stored with its default. An entry whose error
+  is `unpaired surrogate replaced with U+FFFD` is the exception: the value was
+  kept, with each half of a broken surrogate pair (a truncated emoji) replaced
+  by U+FFFD, and `field` names the stored column.
 - `contexts`: a context entity that is malformed, whose schema is not an Iglu
   URI, or whose data failed its Iglu schema (`schema` holds the URI); also one
   entry for the entities over the [`extra.contexts` limits](#context-entities).

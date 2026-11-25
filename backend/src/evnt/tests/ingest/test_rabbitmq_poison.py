@@ -65,7 +65,7 @@ class _Message:
         self.requeued = requeue
 
     async def reject(self, requeue=False):
-        raise AssertionError("reject is only for undecodable payloads")
+        raise AssertionError("the worker never rejects: it acks, requeues or parks")
 
 
 class _FailingRowsSink:
@@ -78,7 +78,7 @@ class _FailingRowsSink:
         self.attempts = 0
         self.inserted = []
 
-    async def insert_batch(self, rows, table_group="evnt"):
+    async def insert_rows(self, rows, table_group="evnt"):
         self.attempts += 1
         if self.always is not None:
             raise self.always
@@ -90,11 +90,11 @@ class _FailingRowsSink:
 class _UnknownTableGroupSink(_FailingRowsSink):
     """Inserts ``evnt`` rows and fails any other table group the way the schema registry does."""
 
-    async def insert_batch(self, rows, table_group="evnt"):
+    async def insert_rows(self, rows, table_group="evnt"):
         if table_group != "evnt":
             self.attempts += 1
             raise KeyError(table_group)
-        await super().insert_batch(rows, table_group=table_group)
+        await super().insert_rows(rows, table_group=table_group)
 
 
 class _OutageAfterFirstInsertSink(_FailingRowsSink):
@@ -104,8 +104,8 @@ class _OutageAfterFirstInsertSink(_FailingRowsSink):
         super().__init__(error, bad_ids)
         self.outage = outage
 
-    async def insert_batch(self, rows, table_group="evnt"):
-        await super().insert_batch(rows, table_group=table_group)
+    async def insert_rows(self, rows, table_group="evnt"):
+        await super().insert_rows(rows, table_group=table_group)
         self.always = self.outage
 
 

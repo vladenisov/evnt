@@ -13,6 +13,7 @@ from ipaddress import IPv4Address
 from uuid import UUID
 
 import pytest
+from aio_pika import DeliveryMode
 from aio_pika.exceptions import ChannelInvalidStateError, ConnectionClosed, DeliveryError
 from clickhouse_connect.driver.exceptions import DataError
 from pamqp.commands import Basic
@@ -196,14 +197,14 @@ class _BatchSink:
         self.fail = fail
         self.batch_calls = []
 
-    async def insert_batch(self, rows, table_group="evnt"):
+    async def insert_rows(self, rows, table_group="evnt"):
         if self.fail:
             raise RuntimeError("boom")
         self.batch_calls.append((table_group, rows))
 
 
-class _InsertRowsOnlySink:
-    """Sink lacking ``insert_batch`` so the worker falls back to insert_rows."""
+class _ProtocolOnlySink:
+    """Records ``RowSink.insert_rows`` calls and fails on the connector's own batch method."""
 
     def __init__(self):
         self.rows_calls = []
@@ -211,9 +212,12 @@ class _InsertRowsOnlySink:
     async def insert_rows(self, rows, table_group="evnt"):
         self.rows_calls.append((table_group, rows))
 
+    async def insert_batch(self, rows, table_group="evnt"):
+        raise AssertionError("worker must insert through RowSink.insert_rows")
+
 
 class _HangingSink:
-    async def insert_batch(self, rows, table_group="evnt"):
+    async def insert_rows(self, rows, table_group="evnt"):
         await asyncio.Event().wait()
 
 
@@ -290,8 +294,8 @@ async def test_flush_timeout_requeues_messages_and_records_failure(anyio_backend
 
 
 @pytest.mark.anyio
-async def test_worker_falls_back_to_insert_rows_when_no_insert_batch(anyio_backend):
-    sink = _InsertRowsOnlySink()
+async def test_worker_inserts_through_the_row_sink_protocol(anyio_backend):
+    sink = _ProtocolOnlySink()
     worker = _worker(sink)
     msg = _FakeMessage(QueuedInsertPayload(rows=[{"id": 9}]))
 
@@ -307,7 +311,7 @@ async def test_isolated_data_error_publishes_to_failed_queue_with_headers(
     anyio_backend,
 ):
     class _DataErrorSink:
-        async def insert_batch(self, rows, table_group="evnt"):
+        async def insert_rows(self, rows, table_group="evnt"):
             raise DataError("bad row")
 
     channel = _RecordingChannel()
@@ -332,7 +336,7 @@ async def test_isolated_data_error_requeues_on_failed_queue_publish_error(
     anyio_backend,
 ):
     class _DataErrorSink:
-        async def insert_batch(self, rows, table_group="evnt"):
+        async def insert_rows(self, rows, table_group="evnt"):
             raise DataError("bad row")
 
     channel = _RecordingChannel(exchange=_RecordingExchange(fail=True))
@@ -349,22 +353,85 @@ async def test_isolated_data_error_requeues_on_failed_queue_publish_error(
     assert worker.failure_counts["evnt"] == 1
 
 
+class _UndecodableMessage(_FakeMessage):
+    def __init__(self, body=b"not-json{", *, headers=None):
+        super().__init__(QueuedInsertPayload(), headers=headers)
+        self.body = body
+
+
 @pytest.mark.anyio
-async def test_add_message_rejects_invalid_payload(anyio_backend):
-    worker = _worker(_BatchSink())
+@pytest.mark.parametrize("body", [b"not-json{", b'{"rows": "not-a-list"}', b"\xff\xfe"])
+async def test_add_message_parks_undecodable_payload_unchanged(anyio_backend, body):
+    channel = _RecordingChannel()
+    worker = _worker(_BatchSink(), channel=channel)
+    msg = _UndecodableMessage(body, headers={"x-client": "kept"})
 
-    class _BadMessage(_FakeMessage):
-        def __init__(self):
-            self.body = b"not-json{"
-            self.acked = False
-            self.nacked = False
-            self.rejected = False
-
-    msg = _BadMessage()
     await worker.add_message(msg)
 
-    assert msg.rejected is True
+    published = channel.default_exchange.published
+    assert len(published) == 1
+    assert published[0]["routing_key"] == "evnt.ingest.failed"
+    assert published[0]["mandatory"] is True
+    parked = published[0]["message"]
+    assert parked.body == body
+    assert parked.delivery_mode == DeliveryMode.PERSISTENT
+    assert parked.headers["x-evnt-failure"] == "undecodable"
+    assert parked.headers["x-evnt-source-queue"] == "evnt.ingest"
+    assert parked.headers["x-evnt-error-type"] == "ValidationError"
+    assert parked.headers["x-evnt-error"]
+    assert parked.headers["x-client"] == "kept"
+    assert "x-evnt-table-group" not in parked.headers
+    assert msg.acked is True
+    assert msg.nacked is False
+    assert msg.rejected is False
     assert worker.pending_batches == {}
+    assert worker.failure_counts == {}
+
+
+@pytest.mark.anyio
+async def test_add_message_requeues_undecodable_payload_when_parking_fails(anyio_backend):
+    exchange = _RecordingExchange(fail=True)
+    worker = _worker(_BatchSink(), channel=_RecordingChannel(exchange=exchange))
+    msg = _UndecodableMessage()
+
+    await worker.add_message(msg)
+
+    # Not parked, so it must stay in the main queue rather than be dropped.
+    assert exchange.published == []
+    assert msg.nacked is True
+    assert msg.acked is False
+    assert msg.rejected is False
+    assert worker._pending_backoff_seconds() == worker.retry_delay
+
+    # Redelivered once the failed queue takes publishes again: parked, backoff cleared.
+    exchange.fail = False
+    redelivered = _UndecodableMessage()
+    await worker.add_message(redelivered)
+
+    assert len(exchange.published) == 1
+    assert redelivered.acked is True
+    assert worker.failure_counts == {}
+    assert worker._pending_backoff_seconds() == 0.0
+
+
+@pytest.mark.anyio
+async def test_add_message_requeues_undecodable_payload_when_parking_hangs(anyio_backend):
+    class _HangingExchange:
+        async def publish(self, message, routing_key, mandatory=True):
+            await asyncio.Event().wait()
+
+    worker = _worker(
+        _BatchSink(),
+        channel=_RecordingChannel(exchange=_HangingExchange()),
+        publish_timeout_seconds=0.01,
+    )
+    msg = _UndecodableMessage()
+
+    await worker.add_message(msg)
+
+    assert msg.nacked is True
+    assert msg.acked is False
+    assert msg.rejected is False
 
 
 @pytest.mark.anyio
