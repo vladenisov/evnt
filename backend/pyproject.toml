@@ -1,6 +1,6 @@
 [project]
 name = "evnt"
-version = "0.6.0"
+version = "0.7.0"
 description = "A tiny self-hosted event collector. Speaks the Snowplow tracker wire protocol, persists to ClickHouse, optional RabbitMQ buffer, single-container deploy."
 license = "BSD-3-Clause"
 authors = [{ name = "Vladislav Denisov" }]
