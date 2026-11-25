@@ -12,7 +12,7 @@
 #   BUILD_DEMO  "false" ships a placeholder page instead of building the SPA
 
 ARG BUILD_DEMO=true
-ARG PYTHON_IMAGE=python:3.14-alpine3.23
+ARG PYTHON_IMAGE=python:3.15-alpine3.23
 ARG BUN_VERSION=1.4.2
 
 # ---- demo SPA -> /web/dist ----
