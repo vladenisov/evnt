@@ -30,7 +30,7 @@
     "@vitest/coverage-v8": "^5.0.3",
     "@vue/test-utils": "^2.5.1",
     "@vue/tsconfig": "^0.9.1",
-    "happy-dom": "^20.14.5",
+    "happy-dom": "^21.0.0",
     "oxlint": "1.86.0",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
     "vite": "^8.3.2",
