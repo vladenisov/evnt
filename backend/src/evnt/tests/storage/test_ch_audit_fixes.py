@@ -2,7 +2,7 @@
 
 Covers four behavior-preserving fixes:
 - ColumnDef.create_expression now emits a declared DEFAULT expression.
-- ClickHouseConnector._sanitize_clickhouse_value is type-aware for UUID.
+- The connector's per-column coercion is type-aware for UUID.
 - ClickHouseConfiguration validates database/cluster_name as SQL identifiers.
 - TableManager.create_database tolerates non-dict table-group values.
 """
@@ -12,7 +12,7 @@ from uuid import UUID
 import pytest
 
 from evnt.config import ClickHouseConfiguration
-from evnt.storage.clickhouse.connector import ClickHouseConnector
+from evnt.storage.clickhouse.connector import _coerce, _value_kind
 from evnt.storage.clickhouse.schema import (
     JSON,
     STRING,
@@ -71,20 +71,32 @@ def test_create_expression_no_default_when_absent():
     assert col.create_expression == "`plain` String"
 
 
-def test_sanitize_uuid_none_becomes_zero_uuid():
-    assert ClickHouseConnector._sanitize_clickhouse_value("UUID", None) == UUID(int=0)
+def _coerce_as(type_name: str, value: object) -> object:
+    return _coerce(_value_kind(type_name), value)
 
 
-def test_sanitize_string_none_becomes_empty():
-    assert ClickHouseConnector._sanitize_clickhouse_value("String", None) == ""
-    assert ClickHouseConnector._sanitize_clickhouse_value("LowCardinality(String)", None) == ""
+def test_coerce_uuid_none_becomes_zero_uuid():
+    assert _coerce_as("UUID", None) == UUID(int=0)
+    assert _coerce_as("UUID", "") == UUID(int=0)
 
 
-def test_sanitize_preserves_non_none_and_other_types():
+def test_coerce_uuid_string_is_parsed():
+    text = "94eb9eca-a77f-4c08-b90c-1260efde3cc5"
+    assert _coerce_as("UUID", text) == UUID(text)
+
+
+def test_coerce_string_none_becomes_empty():
+    assert _coerce_as("String", None) == ""
+    assert _coerce_as("LowCardinality(String)", None) == ""
+    assert _coerce_as("String", "kept") == "kept"
+
+
+def test_coerce_preserves_non_none_and_other_types():
     existing = UUID(int=5)
-    assert ClickHouseConnector._sanitize_clickhouse_value("UUID", existing) is existing
+    assert _coerce_as("UUID", existing) is existing
     # Types without an explicit zero are left as None (unchanged behavior).
-    assert ClickHouseConnector._sanitize_clickhouse_value("UInt64", None) is None
+    assert _coerce_as("UInt64", None) is None
+    assert _coerce_as("Nullable(String)", None) is None
 
 
 @pytest.mark.parametrize("bad", ["evil'; DROP", "db name", "a-b", "x;y"])

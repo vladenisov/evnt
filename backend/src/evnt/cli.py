@@ -18,6 +18,7 @@ import base64
 import json
 import signal
 import time
+from collections.abc import Awaitable, Callable
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -131,6 +132,26 @@ def _worker_is_alive(log: Any) -> bool:
     return True
 
 
+async def _close_all(
+    log: Any,
+    closers: tuple[tuple[str, Callable[[], Awaitable[None]]], ...],
+) -> Exception | None:
+    """Run every closer even if an earlier one fails; return the first failure."""
+    first_error: Exception | None = None
+    for resource, close in closers:
+        try:
+            await close()
+        except Exception as exc:
+            log.error(
+                "Failed to close worker resource",
+                resource=resource,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            first_error = first_error or exc
+    return first_error
+
+
 class SettingsCommands:
     """Inspect the effective settings."""
 
@@ -150,7 +171,11 @@ class SettingsCommands:
         return settings.model_dump(mode="json")
 
     def hostname(self) -> str:
-        """Return ``common.hostname``."""
+        """Return ``common.hostname``.
+
+        This is the configured value. When it is unset, ``/proxy/hash`` uses
+        each request's own origin, not the default printed here.
+        """
         return str(settings.common.hostname)
 
 
@@ -348,18 +373,29 @@ class QueueCommands:
                 raise
 
             # SIGTERM (docker stop, Kubernetes) cancels the running task, so the
-            # finally block below flushes the batch in hand and closes cleanly.
+            # worker flushes the batch in hand before the connections are closed.
             task = asyncio.current_task()
             assert task is not None
             asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, task.cancel)
 
+            run_error: BaseException | None = None
             try:
                 await worker.run()
             except asyncio.CancelledError:
                 log.info("Worker received shutdown signal, flushing")
-            finally:
-                await worker.close()
-                await ch_client.close()
+            except BaseException as exc:
+                run_error = exc
+
+            # A failed close must neither skip the other close nor replace the
+            # error that stopped the worker.
+            close_error = await _close_all(
+                log,
+                (("rabbitmq", worker.close), ("clickhouse", ch_client.close)),
+            )
+            if run_error is not None:
+                raise run_error
+            if close_error is not None:
+                raise close_error
 
         _init_logging()
         asyncio.run(run())

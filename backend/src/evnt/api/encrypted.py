@@ -11,6 +11,7 @@ See ``evnt.crypto`` for the envelope format and the key schedule.
 """
 
 import base64
+import json
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Final
@@ -119,8 +120,14 @@ def _unseal(keyring: Keyring, raw: bytes) -> PayloadModel:
 
     try:
         document = orjson.loads(plaintext)
-    except orjson.JSONDecodeError as exc:
-        raise _rejection("plaintext is not JSON") from exc
+    except orjson.JSONDecodeError:
+        # orjson refuses a lone surrogate escape (a truncated emoji), which the
+        # plaintext POST accepts and stores with U+FFFD. The stdlib parser
+        # takes it, so one such event does not cost a sealed batch.
+        try:
+            document = json.loads(plaintext)
+        except ValueError as exc:
+            raise _rejection("plaintext is not JSON") from exc
 
     try:
         return PayloadModel.model_validate(document)

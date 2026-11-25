@@ -25,8 +25,15 @@ schemas are not silently missing.
 
 | Mode | Request acknowledgement | Separate worker |
 | --- | --- | --- |
-| `direct` | After the ClickHouse insert call succeeds; visibility depends on async-insert settings | No |
+| `direct` | After ClickHouse accepts the rows into its async-insert buffer, by default before they are flushed to the table | No |
 | `rabbitmq` | After publishing to the queue; ClickHouse delivery happens later | `evnt queue worker` |
+
+In `direct` mode the defaults are `async_insert=1` and
+`wait_for_async_insert=0`: the `204` is sent before ClickHouse flushes the
+rows, so an error at flush time is invisible to the client and those rows are
+lost without a retry. `EVNT_INGEST__DIRECT__WAIT_FOR_ASYNC_INSERT=true`
+answers only after the flush, at the cost of latency. See
+[direct inserts and durability](configure/settings.md#direct-inserts-and-durability).
 
 Startup connects only the active API ingest backend, creates the proxy HTTP
 client, loads encryption keys, and warms known schema validators. Resources
@@ -42,7 +49,7 @@ explicitly before ingestion.
 | `backend/src/evnt/api/` | Tracker, encrypted, health, and proxy HTTP routes |
 | `backend/src/evnt/tracker/` | Payload parsing, Iglu validation, IP, User-Agent |
 | `backend/src/evnt/storage/clickhouse/` | Client, connector, field registry, DDL |
-| `backend/src/evnt/ingest/` | RabbitMQ publisher and batch worker |
+| `backend/src/evnt/ingest/` | RabbitMQ publisher, request merging, batch worker and its failure handling |
 | `backend/src/evnt/middleware/` | ASGI middleware |
 | `backend/src/evnt/tests/` | Unit, HTTP, and real-backend integration tests |
 | `frontend/` | Vue 3 demo, Vite, Bun |

@@ -62,3 +62,24 @@ def test_geo_and_anonymity_settings_are_off_by_default_and_overridable(monkeypat
     snowplow = Settings().common.snowplow
     assert snowplow.cloudflare_geo_headers is True
     assert snowplow.honor_sp_anonymous is True
+
+
+def test_hostname_counts_as_configured_only_when_set(monkeypatch):
+    monkeypatch.delenv("EVNT_COMMON__HOSTNAME", raising=False)
+    monkeypatch.setenv("EVNT_COMMON__DEMO", "true")
+    common = Settings().common
+    assert common.hostname_configured is False
+    assert str(common.hostname) == "http://localhost:8000/"
+
+    monkeypatch.setenv("EVNT_COMMON__HOSTNAME", "http://localhost:8000")
+    common = Settings().common
+    assert common.hostname_configured is True
+    assert str(common.hostname) == "http://localhost:8000/"
+
+
+def test_removed_clickhouse_tables_setting_does_not_break_startup(monkeypatch):
+    # `clickhouse.tables` was never read; a leftover env var must stay harmless.
+    monkeypatch.setenv("EVNT_CLICKHOUSE__TABLES", '{"evnt": {"local": {"name": "x"}}}')
+    clickhouse = Settings().clickhouse
+    assert not hasattr(clickhouse, "tables")
+    assert clickhouse.configuration.tables["evnt"]["local"]["name"] != "x"

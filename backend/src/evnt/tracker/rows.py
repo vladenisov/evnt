@@ -4,9 +4,11 @@ Everything here works on values the element model has already validated, so
 none of it needs the malformed-input logging of ``evnt.tracker.payload``.
 """
 
+import re
 from copy import copy
 from datetime import UTC
 from ipaddress import IPv4Address
+from itertools import islice
 from typing import Any
 
 import orjson
@@ -15,6 +17,13 @@ from evnt.tracker.element import EventIssues
 from evnt.tracker.models import InsertModel, PayloadElementModel, UserAgentModel
 
 _SE_PR_JSON_ERRORS = (orjson.JSONDecodeError, TypeError)
+
+# A ``str`` holds a surrogate code point only when it is unpaired (a truncated
+# emoji in JSON decodes to one). It cannot be encoded as UTF-8, so neither the
+# RabbitMQ message nor the ClickHouse insert can carry it.
+_SURROGATES = re.compile("[\ud800-\udfff]")
+_REPLACEMENT = "\ufffd"
+_SURROGATE_NOTE = "unpaired surrogate replaced with U+FFFD"
 
 # The ``platform`` column is an Enum8 without these codes, so they are stored
 # as the closest code it has; the code as sent goes to ``extra.tracker.platform``.
@@ -73,19 +82,84 @@ def build_initial_model(
     return InsertModel.model_construct(**data)
 
 
-def dump_insert_model(model: InsertModel) -> dict[str, Any]:
-    """Return a ClickHouse row dict without running Pydantic serialization."""
+def scrub_surrogates(value: Any) -> Any:
+    """Return ``value`` with every unpaired surrogate replaced by U+FFFD.
 
-    return model.__dict__.copy()
+    Strings are looked for in dicts (keys too), lists and tuples, at any depth.
+    A value that needs no change is returned as is, never copied. Two dict
+    keys that become equal keep the value of the later one.
+    """
+
+    kind = type(value)
+    if kind is str:
+        if value.isascii() or _SURROGATES.search(value) is None:
+            return value
+        return _SURROGATES.sub(_REPLACEMENT, value)
+    if kind is dict:
+        scrubbed: dict[Any, Any] | None = None
+        for index, (key, item) in enumerate(value.items()):
+            clean_key = scrub_surrogates(key)
+            clean_item = scrub_surrogates(item)
+            if scrubbed is None:
+                if clean_key is key and clean_item is item:
+                    continue
+                scrubbed = dict(islice(value.items(), index))
+            scrubbed[clean_key] = clean_item
+        return value if scrubbed is None else scrubbed
+    if kind is list or kind is tuple:
+        items: list[Any] | None = None
+        for index, item in enumerate(value):
+            clean_item = scrub_surrogates(item)
+            if items is None:
+                if clean_item is item:
+                    continue
+                items = list(value[:index])
+            items.append(clean_item)
+        if items is None:
+            return value
+        return items if kind is list else tuple(items)
+    return value
+
+
+def dump_insert_model(model: InsertModel, issues: EventIssues | None = None) -> dict[str, Any]:
+    """Return a ClickHouse row dict without running Pydantic serialization.
+
+    Unpaired surrogates are replaced in every string of the row, and each
+    column that held one is noted in ``issues`` when it is given.
+    """
+
+    row = model.__dict__.copy()
+    # Only values are replaced, so the dict keeps its size while iterated.
+    for name, value in row.items():
+        kind = type(value)
+        if kind is str:
+            if value.isascii():
+                continue
+        elif not value or (kind is not dict and kind is not list):
+            continue
+        clean = scrub_surrogates(value)
+        if clean is not value:
+            row[name] = clean
+            if issues is not None:
+                issues.add("payload", _SURROGATE_NOTE, field=name)
+    return row
 
 
 def apply_platform(result: InsertModel, issues: EventIssues) -> None:
-    """Store a platform code the Enum8 column lacks as its closest code."""
+    """Store a platform code the Enum8 column lacks as its closest code.
+
+    A rejected ``p`` is already in ``issues.tracker`` as it was sent. It goes
+    into ``extra`` after the row is dumped, so it is scrubbed here.
+    """
 
     stored = STORED_PLATFORM.get(result.p)
     if stored is not None:
         issues.track("platform", result.p)
         result.p = stored  # type: ignore[assignment]
+        return
+    tracker = issues.tracker
+    if tracker is not None and (sent := tracker.get("platform")) is not None:
+        tracker["platform"] = scrub_surrogates(sent)
 
 
 def apply_true_timestamp(
@@ -116,9 +190,9 @@ def keep_replaced_urls(
     """
 
     if element.url and result.url != element.url:
-        issues.track("url", element.url)
+        issues.track("url", scrub_surrogates(element.url))
     if element.refr and result.refr != element.refr:
-        issues.track("refr", element.refr)
+        issues.track("refr", scrub_surrogates(element.refr))
 
 
 def normalize_se_property(result: InsertModel) -> None:

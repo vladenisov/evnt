@@ -152,3 +152,31 @@ No column changes; the new keys are inside the existing `extra` JSON column and
 the RabbitMQ message layout is unchanged. See
 [visitor location](../configure/settings.md#visitor-location-cloudflare) and
 [server anonymisation](../configure/settings.md#server-anonymisation-sp-anonymous).
+
+## Failed queue, proxy origin and Elastic APM settings
+
+- **Undecodable queue messages are kept.** A message the RabbitMQ worker cannot
+  decode used to be rejected and lost. It is now moved to the failed queue with
+  its body unchanged and `x-evnt-failure: undecodable`; see
+  [the failed queue](queue.md#failed-queue). Monitor that queue's depth if you
+  did not already.
+- **`/proxy/hash` uses the request origin by default.** With
+  `EVNT_COMMON__HOSTNAME` unset, the returned URLs used to start with
+  `http://localhost:8000`; they now use the `Host` of the request and its
+  scheme. Deployments that set `EVNT_COMMON__HOSTNAME` are unaffected. Behind a
+  proxy that rewrites `Host` or terminates TLS without sending
+  `X-Forwarded-Proto`, set it; see [the proxy](../configure/proxy.md).
+- **The proxy relays caching headers.** `If-None-Match` and `If-Modified-Since`
+  go upstream, and `Cache-Control`, `ETag`, `Last-Modified` and `Expires` come
+  back, so a browser can get a `304` for a proxied script.
+- **`EVNT_ELASTIC_APM__SERVER_URL` and `EVNT_ELASTIC_APM__SERVICE_NAME` now
+  take effect.** Both were ignored: the agent reported to its own default
+  (`http://127.0.0.1:8200` or `ELASTIC_APM_SERVER_URL`) under
+  `EVNT_COMMON__SERVICE_NAME`. If either variable is set in your environment,
+  check that it holds the value you want before upgrading.
+- **`EVNT_CLICKHOUSE__TABLES` is removed.** It was never read; the table layout
+  is `EVNT_CLICKHOUSE__CONFIGURATION__TABLES`. A leftover variable is ignored.
+- **Unpaired surrogates are replaced.** A string holding half of a surrogate
+  pair (a truncated emoji) made the whole request fail with a `500`. Each such
+  character is now stored as U+FFFD and the column is named in
+  `extra.validation`. No column changes.

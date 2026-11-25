@@ -237,11 +237,22 @@ def test_missing_insert_settings_default_to_async_inserts():
     assert connector.insert_settings["async_insert"] == 1
 
 
+def _reference_cell(type_name, value):
+    """What one cell must become, decided from the column's type name."""
+    if type_name == "UUID":
+        if value in (None, ""):
+            return UUID(int=0)
+        return UUID(value) if isinstance(value, str) else value
+    if type_name == "String" or type_name.startswith("LowCardinality(String"):
+        return "" if value is None else value
+    return value
+
+
 def _reference_values(rows, fields):
-    """The per-cell conversion insert_batch used before the column plan."""
+    """Per-cell conversion, independent of the precomputed column plan."""
     from evnt.storage.clickhouse.schema import TupleColumnDef as _Tuple
 
-    sanitize = ClickHouseConnector._sanitize_clickhouse_value
+    sanitize = _reference_cell
     data = []
     for row in rows:
         values = []

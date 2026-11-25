@@ -62,13 +62,10 @@ class _BatchSink:
         self.fail = fail
         self.batch_calls = []
 
-    async def insert_batch(self, rows, table_group="evnt"):
+    async def insert_rows(self, rows, table_group="evnt"):
         if self.fail:
             raise RuntimeError("boom")
         self.batch_calls.append((table_group, rows))
-
-    async def insert_rows(self, rows, table_group="evnt"):
-        raise AssertionError("worker should prefer insert_batch when available")
 
 
 class _SelectiveBatchSink(_BatchSink):
@@ -76,7 +73,7 @@ class _SelectiveBatchSink(_BatchSink):
         super().__init__()
         self.bad_ids = set(bad_ids)
 
-    async def insert_batch(self, rows, table_group="evnt"):
+    async def insert_rows(self, rows, table_group="evnt"):
         if any(row.get("id") in self.bad_ids for row in rows):
             raise DataError("invalid row")
         self.batch_calls.append((table_group, rows))
@@ -218,7 +215,7 @@ class _RowCheckingSink(_BatchSink):
         self.attempts = 0
         self.fail_transient_after = fail_transient_after
 
-    async def insert_batch(self, rows, table_group="evnt"):
+    async def insert_rows(self, rows, table_group="evnt"):
         self.attempts += 1
         if self.fail_transient_after is not None and self.attempts > self.fail_transient_after:
             raise OSError("clickhouse went away")

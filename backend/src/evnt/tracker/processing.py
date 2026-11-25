@@ -25,7 +25,7 @@ from evnt.tracker.models import (
 )
 from evnt.tracker.params import RequestAgents, event_ip
 from evnt.tracker.payload import parse_payload
-from evnt.tracker.rows import build_fallback_model, dump_insert_model
+from evnt.tracker.rows import build_fallback_model, dump_insert_model, scrub_surrogates
 from evnt.tracker.useragent import agent_fields_for_insert_async
 
 logger = structlog.get_logger(__name__)
@@ -118,7 +118,7 @@ async def _build_row(
         except Exception as fallback_exc:
             drop_event("processing_error", exc_type=type(fallback_exc).__name__)
             return None
-    return dump_insert_model(model), issues
+    return dump_insert_model(model, issues), issues
 
 
 def _collector_metadata(
@@ -210,6 +210,8 @@ async def process_data(
         # it is shared, as nothing after this point modifies a row's ``extra``.
         extra = {**item_data["extra"], "collector": {**collector}}
         issues.apply(extra)
-        item_data["extra"] = extra
+        # ``issues`` can hold tracker input recorded after the row was dumped,
+        # so ``extra`` is scrubbed again; a clean one is returned as is.
+        item_data["extra"] = scrub_surrogates(extra)
         result.append(item_data)
     return result

@@ -102,10 +102,50 @@ NODE_TRANSPORT_HARNESS = textwrap.dedent(
 )
 
 
-requires_node = pytest.mark.skipif(
-    shutil.which("node") is None,
-    reason="the cross-language interop check needs Node on PATH",
-)
+NODE_MISSING = "the cross-language interop check needs Node on PATH"
+CI_OFF = ("", "0", "false")
+
+
+def _require_node() -> None:
+    """Skip without Node locally; in CI a skip would pass while testing nothing."""
+    if shutil.which("node") is not None:
+        return
+    if os.environ.get("CI", "").lower() not in CI_OFF:
+        pytest.fail(f"CI is set but {NODE_MISSING}")
+    pytest.skip(NODE_MISSING)
+
+
+@pytest.fixture
+def node() -> None:
+    _require_node()
+
+
+requires_node = pytest.mark.usefixtures("node")
+
+
+class TestRequireNode:
+    @pytest.fixture
+    def no_node(self, monkeypatch):
+        monkeypatch.setattr(shutil, "which", lambda _name: None)
+
+    def test_missing_node_fails_in_ci(self, monkeypatch, no_node):
+        monkeypatch.setenv("CI", "true")
+        with pytest.raises(pytest.fail.Exception, match="CI is set"):
+            _require_node()
+
+    @pytest.mark.parametrize("value", [None, "", "false", "0"])
+    def test_missing_node_skips_locally(self, monkeypatch, no_node, value):
+        if value is None:
+            monkeypatch.delenv("CI", raising=False)
+        else:
+            monkeypatch.setenv("CI", value)
+        with pytest.raises(pytest.skip.Exception, match="needs Node"):
+            _require_node()
+
+    def test_present_node_runs_whatever_ci_says(self, monkeypatch):
+        monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/node")
+        monkeypatch.setenv("CI", "true")
+        _require_node()
 
 
 @pytest.fixture
