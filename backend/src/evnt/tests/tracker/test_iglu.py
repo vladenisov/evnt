@@ -157,3 +157,43 @@ def test_warm_iglu_schema_cache_preloads_validator(monkeypatch, tmp_path):
     result = iglu_module.validate_iglu_payload(schema_uri, {"name": "ok"})
 
     assert result.status == "ok"
+
+
+def test_missing_schema_file_is_looked_up_once(monkeypatch, tmp_path):
+    """A schema outside the mirror arrives with every event: one ``stat``, not one each."""
+    schema_uri = "iglu:com.acme/missing/jsonschema/1-0-0"
+    monkeypatch.setattr(iglu_module, "IGLU_SCHEMAS_DIR", tmp_path)
+    iglu_module.clear_iglu_caches()
+    lookups: list[pathlib.Path] = []
+    is_file = pathlib.Path.is_file
+
+    def counting_is_file(self: pathlib.Path) -> bool:
+        lookups.append(self)
+        return is_file(self)
+
+    monkeypatch.setattr(pathlib.Path, "is_file", counting_is_file)
+
+    results = [iglu_module.validate_iglu_payload(schema_uri, {}) for _ in range(3)]
+
+    assert [result.error for result in results] == ["schema file not found"] * 3
+    assert len(lookups) == 1
+    iglu_module.clear_iglu_caches()
+
+
+def test_unknown_schemas_do_not_evict_compiled_validators(monkeypatch, tmp_path):
+    """Client-made URIs fill their own cache, so a known schema is compiled once."""
+    schema_uri = "iglu:com.acme/example/jsonschema/1-0-0"
+    monkeypatch.setattr(iglu_module, "IGLU_SCHEMAS_DIR", tmp_path)
+    iglu_module.clear_iglu_caches()
+    _write_schema(tmp_path, schema_uri, '{"type": "object"}')
+    assert iglu_module.validate_iglu_payload(schema_uri, {}).status == "ok"
+    compiled = iglu_module._load_validator.cache_info().misses
+
+    made_up = iglu_module._unavailable.cache_info().maxsize + 10
+    for index in range(made_up):
+        uri = f"iglu:com.acme/made_up_{index}/jsonschema/1-0-0"
+        assert iglu_module.validate_iglu_payload(uri, {}).status == "warning"
+
+    assert iglu_module.validate_iglu_payload(schema_uri, {}).status == "ok"
+    assert iglu_module._load_validator.cache_info().misses == compiled
+    iglu_module.clear_iglu_caches()

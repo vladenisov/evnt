@@ -1,4 +1,4 @@
-"""Span helpers: the real agent's when installed, no-ops otherwise."""
+"""Span helpers: the real agent's when APM is enabled and installed, no-ops otherwise."""
 
 import importlib.util
 import sys
@@ -6,15 +6,14 @@ from types import ModuleType
 
 import pytest
 
+from evnt.config import settings
 from evnt.observability import tracing
 
 
-def _load_without_elastic_apm(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
-    """Execute tracing.py as a private copy with ``elasticapm`` unimportable."""
-    # A None entry makes the import machinery raise ImportError.
-    monkeypatch.setitem(sys.modules, "elasticapm.contrib.asyncio.traces", None)
+def _load_copy(name: str) -> ModuleType:
+    """Execute tracing.py as a private copy, so it reads the settings again."""
     assert tracing.__file__ is not None
-    spec = importlib.util.spec_from_file_location("_tracing_without_apm", tracing.__file__)
+    spec = importlib.util.spec_from_file_location(name, tracing.__file__)
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -22,14 +21,38 @@ def _load_without_elastic_apm(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     return module
 
 
-def test_exports_agent_spans_when_extra_is_installed() -> None:
+def _load_without_elastic_apm(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    """A copy of tracing.py with APM enabled and ``elasticapm`` unimportable."""
+    monkeypatch.setattr(settings.elastic_apm, "enabled", True)
+    # A None entry makes the import machinery raise ImportError.
+    monkeypatch.setitem(sys.modules, "elasticapm.contrib.asyncio.traces", None)
+    return _load_copy("_tracing_without_apm")
+
+
+def test_exports_agent_spans_when_apm_is_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     traces = pytest.importorskip(
         "elasticapm.contrib.asyncio.traces",
         reason="needs the optional `apm` extra",
     )
+    monkeypatch.setattr(settings.elastic_apm, "enabled", True)
 
-    assert tracing.async_capture_span is traces.async_capture_span
-    assert tracing.capture_span is traces.capture_span
+    enabled = _load_copy("_tracing_with_apm")
+
+    assert enabled.async_capture_span is traces.async_capture_span
+    assert enabled.capture_span is traces.capture_span
+
+
+def test_spans_are_noops_when_apm_is_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The extra being installed is not enough: a disabled agent costs nothing."""
+    monkeypatch.setattr(settings.elastic_apm, "enabled", False)
+
+    disabled = _load_copy("_tracing_apm_disabled")
+
+    async def work() -> str:
+        return "done"
+
+    assert disabled.async_capture_span()(work) is work
+    assert disabled.capture_span()(work) is work
 
 
 def test_noop_span_decorator_returns_the_function_unchanged(

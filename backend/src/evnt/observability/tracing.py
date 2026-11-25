@@ -1,4 +1,8 @@
-"""APM span helpers that degrade to no-ops without ``elastic-apm``.
+"""APM span helpers that are no-ops unless Elastic APM is enabled and installed.
+
+The real helpers cost a wrapper call and a transaction lookup per decorated
+function even with no agent running, so a collector with the ``apm`` extra
+installed but ``EVNT_ELASTIC_APM__ENABLED`` off gets the no-ops too.
 
 Both helpers support the two forms the real library offers:
 
@@ -10,8 +14,11 @@ Both helpers support the two forms the real library offers:
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import suppress
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Protocol
+
+from evnt.config import settings
 
 if TYPE_CHECKING:
 
@@ -46,30 +53,32 @@ if TYPE_CHECKING:
     def capture_span(name: str | None = None, **kwargs: Any) -> _SyncSpan: ...
 
 else:
-    try:
-        from elasticapm.contrib.asyncio.traces import async_capture_span, capture_span
-    except ImportError:
 
-        class _NoopSpan:
-            def __init__(self, *_args: Any, **_kwargs: Any) -> None: ...
+    class _NoopSpan:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None: ...
 
-            def __call__(self, func: Callable[..., Any]) -> Callable[..., Any]:
-                return func
+        def __call__(self, func: Callable[..., Any]) -> Callable[..., Any]:
+            return func
 
-            def __enter__(self) -> _NoopSpan:
-                return self
+        def __enter__(self) -> _NoopSpan:
+            return self
 
-            def __exit__(self, *_exc: object) -> bool:
-                return False
+        def __exit__(self, *_exc: object) -> bool:
+            return False
 
-            async def __aenter__(self) -> _NoopSpan:
-                return self
+        async def __aenter__(self) -> _NoopSpan:
+            return self
 
-            async def __aexit__(self, *_exc: object) -> bool:
-                return False
+        async def __aexit__(self, *_exc: object) -> bool:
+            return False
 
-        async_capture_span = _NoopSpan
-        capture_span = _NoopSpan
+    async_capture_span = _NoopSpan
+    capture_span = _NoopSpan
+
+    if settings.elastic_apm.enabled:
+        # ``create_app`` reports a missing extra; spans then stay no-ops.
+        with suppress(ImportError):
+            from elasticapm.contrib.asyncio.traces import async_capture_span, capture_span
 
 
 __all__ = ["async_capture_span", "capture_span"]

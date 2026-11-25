@@ -6,9 +6,7 @@ the JS and mobile trackers, ``/i`` takes single events as GET query strings and
 answers with a tracking pixel.
 """
 
-from typing import Annotated
-
-from fastapi import APIRouter, Header, Request, Response
+from fastapi import APIRouter, Request, Response
 from starlette.status import HTTP_204_NO_CONTENT
 
 from evnt.api.deps import ClientNetworkDep, DbConnector
@@ -18,9 +16,6 @@ from evnt.observability.tracing import async_capture_span
 from evnt.tracker.models import PayloadModel
 from evnt.tracker.processing import process_data
 
-UserAgent = Annotated[str | None, Header()]
-Cookie = Annotated[str | None, Header()]
-
 
 @async_capture_span()
 async def tracker_cors() -> None:
@@ -29,11 +24,10 @@ async def tracker_cors() -> None:
 
 @async_capture_span()
 async def tracker_post(
+    request: Request,
     connector: DbConnector,
     body: PayloadModel,
     network: ClientNetworkDep,
-    user_agent: UserAgent = None,
-    cookie: Cookie = None,
 ) -> Response:
     """Store a batch POSTed by a Snowplow tracker.
 
@@ -42,11 +36,12 @@ async def tracker_post(
     validated one by one, so a bad event never fails its batch: it is stored
     with its problems in ``extra.validation``, or dropped if it cannot be built.
     """
+    headers = request.headers
     data = await process_data(
         body,
-        user_agent,
+        headers.get("user-agent"),
         network.ip,
-        cookie,
+        headers.get("cookie"),
         user_country=network.country,
         geo=network.geo,
         anonymous=network.anonymous,
@@ -60,8 +55,6 @@ async def tracker_get(
     request: Request,
     connector: DbConnector,
     network: ClientNetworkDep,
-    user_agent: UserAgent = None,
-    cookie: Cookie = None,
 ) -> Response:
     """Store a single event sent as a query string and return the pixel.
 
@@ -72,11 +65,12 @@ async def tracker_get(
     answers with an error, so the tracker retries.
     """
     params = dict(request.query_params)  # a repeated parameter keeps its last value
+    headers = request.headers
     data = await process_data(
         params,
-        user_agent,
+        headers.get("user-agent"),
         network.ip,
-        cookie,
+        headers.get("cookie"),
         user_country=network.country,
         geo=network.geo,
         anonymous=network.anonymous,

@@ -148,42 +148,68 @@ def clear_iglu_caches() -> None:
     """Reset cached validators for tests."""
 
     _load_validator.cache_clear()
+    _unavailable.cache_clear()
     _relative_schema_path.cache_clear()
     _schema_key.cache_clear()
+
+
+@lru_cache(maxsize=1024)
+def _unavailable(schema_uri: str) -> ValidationResult | None:
+    """Why a schema has no file to load, or ``None`` when it has one.
+
+    Most custom schemas are not in the local mirror, and every event carrying
+    one would otherwise pay a ``stat`` and a raised exception per entity. Kept
+    apart from the validator cache, so URIs made up by a client can only evict
+    each other, never a compiled validator.
+    """
+
+    schema_path = resolve_iglu_schema_path(schema_uri)
+    if schema_path is None:
+        return ValidationResult(status="skipped")
+    if not schema_path.is_file():
+        return ValidationResult(
+            status="warning",
+            schema_path=schema_path,
+            error="schema file not found",
+        )
+    return None
+
+
+def _load(schema_uri: str) -> tuple[Draft4Validator, Path] | ValidationResult:
+    """The compiled validator of a schema, or why there is none."""
+
+    if not isinstance(schema_uri, str) or len(schema_uri) > MAX_IGLU_URI_CHARS:
+        return ValidationResult(status="skipped")
+    if (unavailable := _unavailable(schema_uri)) is not None:
+        return unavailable
+
+    try:
+        return _load_validator(schema_uri)
+    except FileNotFoundError:
+        error = "schema file not found"
+    except json.JSONDecodeError as exc:
+        error = f"schema JSON decode failed: {exc}"
+    except OSError as exc:
+        error = f"schema file read failed: {exc}"
+    except ValidationError as exc:
+        error = f"schema compilation failed: {exc.message}"
+    except ValueError as exc:
+        error = f"schema compilation failed: {exc}"
+
+    return ValidationResult(
+        status="warning",
+        schema_path=resolve_iglu_schema_path(schema_uri),
+        error=error,
+    )
 
 
 def prepare_iglu_schema(schema_uri: str) -> ValidationResult:
     """Resolve and cache a schema validator without validating payload data."""
 
-    schema_path = resolve_iglu_schema_path(schema_uri)
-    if schema_path is None:
-        return ValidationResult(status="skipped")
-
-    try:
-        _, cached_path = _load_validator(schema_uri)
-    except FileNotFoundError:
-        error = "schema file not found"
-        warning_path = schema_path
-    except json.JSONDecodeError as exc:
-        error = f"schema JSON decode failed: {exc}"
-        warning_path = schema_path
-    except OSError as exc:
-        error = f"schema file read failed: {exc}"
-        warning_path = schema_path
-    except ValidationError as exc:
-        error = f"schema compilation failed: {exc.message}"
-        warning_path = schema_path
-    except ValueError as exc:
-        error = f"schema compilation failed: {exc}"
-        warning_path = schema_path
-    else:
-        return ValidationResult(status="ok", schema_path=cached_path)
-
-    return ValidationResult(
-        status="warning",
-        schema_path=warning_path,
-        error=error,
-    )
+    loaded = _load(schema_uri)
+    if isinstance(loaded, ValidationResult):
+        return loaded
+    return ValidationResult(status="ok", schema_path=loaded[1])
 
 
 def warm_iglu_schema_cache(
@@ -200,11 +226,11 @@ def warm_iglu_schema_cache(
 def validate_iglu_payload(schema_uri: str, data: Any) -> ValidationResult:
     """Validate payload data against a locally resolved Iglu schema."""
 
-    load_result = prepare_iglu_schema(schema_uri)
-    if load_result.status != "ok":
-        return load_result
+    loaded = _load(schema_uri)
+    if isinstance(loaded, ValidationResult):
+        return loaded
 
-    validator, cached_path = _load_validator(schema_uri)
+    validator, cached_path = loaded
     try:
         validator.validate(data)
     except ValidationError as exc:
