@@ -7,7 +7,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from http.cookies import SimpleCookie
 from ipaddress import IPv4Address
-from typing import Any, Literal
+from typing import Any, Final, Literal
 from uuid import UUID
 
 import structlog
@@ -127,6 +127,16 @@ _CLIENT_HINT_ERRORS = (TypeError, ValueError)
 
 schemas = settings.common.snowplow.schemas
 
+# Vendors of the collector's own schemas (``dev.snowplow.simple/user_data``
+# and the rest of ``SnowplowSchemas``). They are fixed names with no format
+# or version, defined by this collector rather than published to Iglu, so
+# they are never validated and a repeat on one event is merged by its
+# handler, as it always was, instead of being kept or flagged.
+_COLLECTOR_VENDORS: Final = frozenset(
+    name.split("/", 1)[0] for name in schemas.model_dump().values()
+)
+_NOT_VALIDATED: Final = ValidationResult(status="skipped")
+
 
 def _coalesce_dimension_value(value: Any, fallback: str) -> str:
     """Keep an existing dimension when a context tries to overwrite it with null."""
@@ -213,6 +223,12 @@ def _schema_name_from_uri(schema_uri: str) -> str:
 
     body = schema_uri.removeprefix(_IGLU_SCHEME_PREFIX)
     return "/".join(body.split("/")[:2])
+
+
+def _is_collector_schema(schema: str) -> bool:
+    """Whether a ``vendor/name`` key belongs to the collector's own schemas."""
+
+    return schema.split("/", 1)[0] in _COLLECTOR_VENDORS
 
 
 def _log_validation_result(
@@ -507,16 +523,21 @@ async def parse_contexts(
                 issues.add("contexts", "context schema is not a string")
             continue
 
-        validation = validate_iglu_payload(schema_uri, data)
-        _log_validation_result(
-            validation,
-            schema_uri=schema_uri,
-            validation_stage="contexts",
-            issues=issues,
-        )
-
         schema = _schema_name_from_uri(schema_uri)
+        collector_schema = _is_collector_schema(schema)
+        if collector_schema:
+            validation = _NOT_VALIDATED
+        else:
+            validation = validate_iglu_payload(schema_uri, data)
+            _log_validation_result(
+                validation,
+                schema_uri=schema_uri,
+                validation_stage="contexts",
+                issues=issues,
+            )
         handler = CONTEXT_HANDLERS.get(schema)
+        # A collector schema has no version, so it is kept under its name.
+        kept_as = (schema, "") if collector_schema else None
 
         if not isinstance(data, dict):
             # Kept whatever the schema: no handler can consume it.
@@ -524,14 +545,14 @@ async def parse_contexts(
             if issues is not None:
                 if not validation.invalid_data:
                     issues.add("contexts", "context data is not an object", schema=schema_uri)
-                issues.keep_entity(schema_uri, data)
+                issues.keep_entity(schema_uri, data, key=kept_as)
             continue
 
         if handler is None:
             # Kept in extra.contexts. Not logged: this used to be a warning
             # per entity and was the main source of log noise.
             if issues is not None:
-                issues.keep_entity(schema_uri, data)
+                issues.keep_entity(schema_uri, data, key=kept_as)
             continue
 
         if schema in handled:
@@ -539,7 +560,7 @@ async def parse_contexts(
             # only one entity's values in the columns. They still run, so the
             # columns get what they always got, and the repeat is kept whole,
             # encoded before the handler pops fields out of it.
-            if issues is not None:
+            if issues is not None and not collector_schema:
                 issues.keep_entity(schema_uri, data)
         else:
             handled.add(schema)
@@ -589,13 +610,14 @@ async def parse_event(
         _malformed_event(issues, "unstructured event has no schema")
         return model
     data = event_payload.get("data")
-    validation = validate_iglu_payload(schema_uri, data)
-    _log_validation_result(
-        validation,
-        schema_uri=schema_uri,
-        validation_stage="event",
-        issues=issues,
-    )
+    if not _is_collector_schema(_schema_name_from_uri(schema_uri)):
+        validation = validate_iglu_payload(schema_uri, data)
+        _log_validation_result(
+            validation,
+            schema_uri=schema_uri,
+            validation_stage="event",
+            issues=issues,
+        )
 
     if schema_uri == schemas.u2s_data:
         try:

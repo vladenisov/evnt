@@ -272,3 +272,60 @@ def test_stored_entities_keep_a_value_orjson_cannot_encode_as_its_repr():
 
     assert stored.add("com.acme/x", "1-0-0", {"big": 2**70})
     assert json.loads(stored.by_schema["com.acme/x"][0]["data"]) == repr({"big": 2**70})
+
+
+USER_DATA_URI = "iglu:dev.snowplow.simple/user_data"
+
+
+@pytest.mark.anyio
+async def test_a_repeated_collector_schema_is_merged_and_not_flagged(monkeypatch):
+    """Production case: the Windy apps attach ``user_data`` twice on most events.
+
+    The collector's own schemas have no version and are not Iglu schemas, so
+    they are neither validated nor flagged; the handler merges the repeat into
+    the column, as before entities were kept.
+    """
+
+    def must_not_validate(schema_uri, data):
+        raise AssertionError(f"validated a collector schema: {schema_uri}")
+
+    monkeypatch.setattr(payload_module, "validate_iglu_payload", must_not_validate)
+
+    row = await _row(
+        {"schema": USER_DATA_URI, "data": {"user_id": "u-1"}},
+        {"schema": USER_DATA_URI, "data": {"activity": "kite"}},
+    )
+
+    assert row["user_data"] == {"user_id": "u-1", "activity": "kite"}
+    assert "validation" not in row["extra"]
+    assert "contexts" not in row["extra"]
+
+
+@pytest.mark.anyio
+async def test_an_unhandled_collector_schema_is_kept_under_its_name():
+    row = await _row({"schema": "iglu:dev.snowplow.simple/new_data", "data": {"a": 1}})
+
+    assert _stored(row, "dev.snowplow.simple/new_data") == [("", {"a": 1})]
+    assert "validation" not in row["extra"]
+
+
+@pytest.mark.anyio
+async def test_a_collector_schema_event_is_not_validated(monkeypatch):
+    def must_not_validate(schema_uri, data):
+        raise AssertionError(f"validated a collector schema: {schema_uri}")
+
+    monkeypatch.setattr(payload_module, "validate_iglu_payload", must_not_validate)
+    ue = json.dumps(
+        {
+            "schema": "iglu:com.snowplowanalytics.snowplow/unstruct_event/jsonschema/1-0-0",
+            "data": {
+                "schema": "dev.snowplow.simple/u2s_data",
+                "data": {"category": "c", "action": "a"},
+            },
+        }
+    )
+
+    row = await _row(e="ue", ue_pr=ue)
+
+    assert (row["e"], row["se_ca"], row["se_ac"]) == ("se", "c", "a")
+    assert "validation" not in row["extra"]

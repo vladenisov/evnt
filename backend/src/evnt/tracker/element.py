@@ -125,14 +125,21 @@ class EventIssues:
             self.tracker = {}
         self.tracker[key] = value
 
-    def keep_entity(self, schema_uri: str, data: Any) -> None:
+    def keep_entity(
+        self,
+        schema_uri: str,
+        data: Any,
+        key: tuple[str, str] | None = None,
+    ) -> None:
         """Keep a context entity no handler consumed in ``extra.contexts``.
 
-        An entity whose schema is not an Iglu URI has no ``vendor/name`` key to
-        go under, so it is recorded as a problem instead.
+        ``key`` is the ``vendor/name`` and version to keep it under; by default
+        both come from the URI. An entity whose schema is not an Iglu URI has
+        no such key, so it is recorded as a problem instead.
         """
 
-        key = schema_key(schema_uri)
+        if key is None:
+            key = schema_key(schema_uri)
         if key is None:
             self.add("contexts", "schema is not an Iglu URI", schema=schema_uri)
             return
